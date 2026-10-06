@@ -659,6 +659,60 @@ describe('scrape', () => {
 		expect(sections.length).toBeGreaterThanOrEqual(2);
 	});
 
+	test('sliceSections terminates on space-free runs and keeps the whole tail', () => {
+		const { outline, sections, continued } = sliceSections(`## A\n\n${'w'.repeat(3000)}`, 3000);
+		expect(outline).toEqual(['A', 'A (cont. 1)']);
+		expect(sections.length).toBe(2);
+		expect(continued).toEqual([0]);
+		expect(sections[0]).toContain('…(continues at outline index 1)');
+		const joined = sections.join('\n');
+		expect((joined.match(/w/g) ?? []).length).toBe(3000);
+	});
+	test('sliceSections splits over-cap sections into addressable continuations at paragraph boundaries', () => {
+		const body = Array.from(
+			{ length: 120 },
+			(_, i) => `Para ${i} of the long section body, padded with real words.`,
+		).join('\n\n');
+		const { outline, sections, continued } = sliceSections(`# Grand Doc\n\n${body}`, 3000);
+		expect(outline[0]).toBe('Grand Doc');
+		expect(outline[1]).toBe('Grand Doc (cont. 1)');
+		expect(outline.length).toBe(sections.length);
+		let sawTail = false;
+		for (const p of sections) {
+			expect(p.length).toBeLessThanOrEqual(3200);
+			if (p.includes('Para 119')) sawTail = true;
+		}
+		expect(sawTail).toBe(true);
+		expect(sections.length).toBeGreaterThan(1);
+		for (const idx of continued) {
+			expect(sections[idx]).toContain(`…(continues at outline index ${idx + 1})`);
+		}
+		expect(continued).not.toContain(sections.length - 1);
+		expect(sections[1]).toMatch(/^# Grand Doc/);
+	});
+	test('sliceSections keeps a split heading-less lead aligned via (lead) + continuation entries', () => {
+		const lead = Array.from({ length: 80 }, (_, i) => `Lead paragraph ${i} carrying the page summary.`).join('\n\n');
+		const { outline, sections, continued } = sliceSections(
+			`${lead}\n\n## First\n\nfirst body\n\n## Second\n\nsecond body`,
+			1000,
+		);
+		expect(outline[0]).toBe('(lead)');
+		expect(outline[1]).toBe('(lead) (cont. 1)');
+		expect(outline[outline.length - 2]).toBe('First');
+		expect(outline[outline.length - 1]).toBe('Second');
+		expect(outline.length).toBe(sections.length);
+		expect(sections[0]).not.toMatch(/^#/);
+		expect(continued).toContain(0);
+		expect(continued).not.toContain(sections.length - 1);
+		expect(sections[0]).toContain('…(continues at outline index 1)');
+	});
+	test('headingless page gets a synthetically named (lead) section', () => {
+		const doc = Array.from({ length: 10 }, (_, i) => `Plain paragraph ${i} on a headingless page.`).join('\n\n');
+		const { outline, sections } = sliceSections(doc, 3000);
+		expect(outline).toEqual(['(lead)']);
+		expect(sections).toHaveLength(1);
+		expect(sections[0]).toContain('Plain paragraph 9');
+	});
 	test('sliceSections aligns outline[i] with sections[i] via a synthesized (lead) entry', () => {
 		const doc = [
 			'RePL Guide',
@@ -678,6 +732,45 @@ describe('scrape', () => {
 		expect(sections[1]).toContain('## History');
 		expect(sections[2]).toContain('## Overview');
 		expect(sections[3]).toContain('## Uses');
+	});
+	test('sliceSections drops promo/nag blocks but keeps real prose with a single incidental promo word', () => {
+		const doc = [
+			'Become a premium member',
+			'Unlock exclusive tools and insights for enthusiasts who want more.',
+			"Stay On the Cutting Edge: Get the Tom's Hardware Newsletter. Enter your email below and we'll send confirmation plus sign you up to our newsletter. By submitting your information you agree to the Terms & Conditions.",
+			'# Real Heading',
+			'Anthropic warned that advanced AI could pose catastrophic risks to humanity.',
+			'The company devoted nearly a third of its prospectus to risk factors — 80 of 261 pages.',
+			'This premium tier costs nothing extra, and no membership is required.',
+		].join('\n\n');
+		const { outline, sections } = sliceSections(doc, 3000);
+		const all = sections.join('\n');
+		expect(all).not.toContain('premium member');
+		expect(all).not.toContain('newsletter');
+		expect(all).not.toContain('Cutting Edge');
+		expect(all).toContain('80 of 261 pages');
+		expect(all).toContain('This premium tier');
+		expect(outline).toEqual(['Real Heading']);
+	});
+	test('sliceSections drops a promo heading entirely from the outline', () => {
+		const doc = [
+			'# Become a premium member',
+			'Unlock exclusive tools for enthusiasts who want more.',
+			'# Actual Content',
+			'Real body text about the subject, with useful facts to extract.',
+		].join('\n\n');
+		const { outline, sections } = sliceSections(doc, 3000);
+		expect(outline).toEqual(['Actual Content']);
+		expect(sections.join('\n')).not.toContain('exclusive');
+	});
+	test('sliceSections drops adjacent verbatim-duplicate paragraphs', () => {
+		const { text } = extractHtml(
+			'<p>Photograph: Carlos Barría/Reuters View image in fullscreen</p><p>Photograph: Carlos Barría/Reuters View image in fullscreen</p><h2>Body</h2><p>Real unique paragraph.</p>',
+		);
+		const { sections } = sliceSections(text, 3000);
+		const all = sections.join('\n\n');
+		expect(all.match(/Photograph: Carlos/i)?.length ?? 0).toBe(1);
+		expect(all).toContain('Real unique paragraph.');
 	});
 
 	test('search drops engines that error or return nothing useful', async () => {
@@ -713,11 +806,19 @@ describe('scrape', () => {
 		expect(all).toContain('Paragraph four');
 
 		const long = `# H\n\n` + 'word '.repeat(1000);
-		const { sections: cappedSections } = sliceSections(long, 200);
+		const { sections: cappedSections, outline, continued } = sliceSections(long, 200);
 		const capped = cappedSections[0];
-		expect(capped).toContain('[section truncated: capped at 200 chars');
+		expect(capped).toContain('…(continues at outline index 1)');
+		expect(cappedSections.join('')).not.toContain('not retrievable');
+		expect(cappedSections.length).toBeGreaterThan(20);
+		expect(outline[0]).toBe('H');
+		expect(outline[1]).toBe('H (cont. 1)');
+		expect(continued).toContain(0);
+		expect(continued).toContain(cappedSections.length - 2);
+		expect(continued).not.toContain(cappedSections.length - 1);
 		// never cuts mid-word: the cut lands on a space immediately before the marker
 		expect(/\w…/.test(capped)).toBe(false);
+		expect(cappedSections[cappedSections.length - 1]).toMatch(/word\s*$/);
 	});
 
 	test('extractHtml keeps list items on their own lines, not run-on', () => {

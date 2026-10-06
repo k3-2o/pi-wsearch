@@ -25,6 +25,7 @@ export interface ScrapeResult {
 	sections: string[];
 	text: string;
 	truncated: boolean;
+	continued: number[];
 	error?: string;
 }
 
@@ -284,27 +285,78 @@ function isOutlineEcho(block: string, outline: string[]): boolean {
 	return raw.filter(hit).length / raw.length >= 0.6;
 }
 
+const PROMO_STRONG = [
+	/become a (?:premium )?member/i,
+	/unlock exclusive/i,
+	/go premium/i,
+	/upgrade to (?:the )?premium/i,
+	/your membership journey/i,
+	/stay on the cutting edge/i,
+	/enter your email below/i,
+	/by submitting your information/i,
+	/sign (?:up|you up) (?:for|to) (?:our )?(?:free )?newsletter/i,
+	/subscribe to (?:our )?newsletter/i,
+	/get the [a-z][a-z ]{2,40}newsletter/i,
+	/limited-?time (?:premium )?offer/i,
+	/choose how you want to join/i,
+	/explore (?:our )?(?:premium|pro)\b/i,
+	/get started with free access/i,
+	/premium (?:newsletter|articles?|membership|features|offer)/i,
+	/sign[- ]?up (?:was|is) successful/i,
+];
+const PROMO_CTA_RE =
+	/\b(?:newsletter|membership|club membership|premium member|sign ?up|subscribe|unlock|upgrade|cancel anytime|limited-?time|free trial|join now|join today)\b/gi;
+
+function isPromo(t: string): boolean {
+	if (PROMO_STRONG.some((r) => r.test(t))) return true;
+	return (t.match(PROMO_CTA_RE) ?? []).length >= 2;
+}
+
+function splitSection(s: string, sectionCap: number): string[] {
+	const hm = /^(#{1,6})\s+([^\n]+)/.exec(s);
+	const partHead = hm ? `${'#'.repeat(hm[1].length)} ${hm[2].trim()}\n\n` : '';
+	const floor = Math.min(partHead.length + 1, sectionCap);
+	const parts: string[] = [];
+	let rest = s;
+	for (;;) {
+		if (rest.length <= sectionCap) {
+			parts.push(rest);
+			return parts;
+		}
+		const cut = rest.slice(0, sectionCap);
+		let at = cut.lastIndexOf('\n\n');
+		if (at < floor) at = cut.lastIndexOf(' ');
+		if (at < floor) at = sectionCap;
+		const used = Math.min(at, rest.length - 1);
+		parts.push(rest.slice(0, used).replace(/\s+$/, ''));
+		rest = partHead + rest.slice(used).trimStart();
+	}
+}
+
 export function sliceSections(
 	text: string,
 	sectionCap = DEFAULT_SECTION_CAP,
-): { outline: string[]; sections: string[] } {
+): { outline: string[]; sections: string[]; continued: number[] } {
 	const blocks = text.replace(/\n{3,}/g, '\n\n').split('\n\n');
 	const sections: string[] = [];
-	const outline: string[] = [];
+	const outlineNames: string[] = [];
 	let cur = '';
+	let lastBlock = '';
 	for (const b of blocks) {
-		if (!b.trim()) continue;
-		if (isBoilerplate(b)) continue;
-		if (isOutlineEcho(b, outline)) continue;
+		const tb = b.trim();
+		if (!tb || tb === lastBlock) continue;
+		lastBlock = tb;
+		if (isBoilerplate(b) || isPromo(b)) continue;
+		if (isOutlineEcho(b, outlineNames)) continue;
 		const hm = /^(#{1,6})\s+([^\n]+)([\s\S]*)$/.exec(b);
 		if (hm) {
 			const name = hm[2].trim();
-			if (/^(navigation|contents|related topics|quick search|sidebar|footer)$/i.test(name)) continue;
+			if (/^(navigation|contents|related topics|quick search|sidebar|footer)$/i.test(name) || isPromo(name)) continue;
 			if (cur.trim()) sections.push(cur.trim());
 			const depth = hm[1].length;
 			const rest = (hm[3] ?? '').replace(/^[\n\s]+/, '');
 			cur = `${'#'.repeat(depth)} ${name}` + (rest ? `\n${rest}` : '') + '\n';
-			if (outline.length < OUTLINE_CAP && depth <= 4) outline.push(name.replace(/\s+/g, ' ').slice(0, 90));
+			if (outlineNames.length < OUTLINE_CAP && depth <= 4) outlineNames.push(name.replace(/\s+/g, ' ').slice(0, 90));
 			continue;
 		}
 		cur += scrubNavBullets(b) + '\n\n';
@@ -317,26 +369,34 @@ export function sliceSections(
 				.split('\n')
 				.filter((l) => !/^#{1,6} /.test(l))
 				.join('\n');
-			return !nonHeading.trim() || !isOutlineEcho(nonHeading, outline);
+			return !nonHeading.trim() || !isOutlineEcho(nonHeading, outlineNames);
 		});
 		return body.join('\n\n');
 	});
 	const capped: string[] = [];
-	for (let s of pruned) {
-		if (s.length > sectionCap) {
-			const cut = s.slice(0, sectionCap);
-			const at = cut.lastIndexOf('\n\n');
-			const note = `…[section truncated: capped at ${sectionCap} chars — the rest of this section is not retrievable]`;
-			if (at > sectionCap - CAP_BREAK_GRACE) s = cut.slice(0, at) + '\n' + note;
-			else s = cut + ' ' + note;
-		}
-		if (s.trim().length >= SECTION_MIN || /^#{1,6} /.test(s)) capped.push(s.trim());
+	const continued: number[] = [];
+	const outline: string[] = [];
+	const lead = sections.length > 0 && !/^#{1,6} /.test(sections[0]);
+	for (let i = 0; i < pruned.length; i++) {
+		const s = pruned[i].trim();
+		if (s.length < SECTION_MIN && !/^#{1,6} /.test(s)) continue;
+		const hm = /^(#{1,6})\s+([^\n]+)/.exec(s);
+		const own = hm ? hm[2].trim() : '(lead)';
+		const base = hm ? (outlineNames[i - (lead ? 1 : 0)] ?? own) : '(lead)';
+		const name = base.replace(/\s+/g, ' ').slice(0, 90);
+		const parts = s.length <= sectionCap ? [s] : splitSection(s, sectionCap);
+		const last = parts.length - 1;
+		parts.forEach((p, k) => {
+			outline.push(k === 0 ? name : `${name} (cont. ${k})`);
+			if (k < last) continued.push(capped.length);
+			const body =
+				parts.length === 1 || k === last
+					? p
+					: `${p.replace(/\s+$/, '')}\n\n…(continues at outline index ${capped.length + 1})`;
+			capped.push(body);
+		});
 	}
-	// A leading heading-less section (the page lead) shifts every outline index off by one;
-	// synthesizing its outline entry keeps section[i] and outline[i] aligned and the lead requestable.
-	const preambleIdx = capped.findIndex((s) => !/^#{1,6} /.test(s));
-	if (preambleIdx === 0 && outline.length > 0) outline.unshift('(lead)');
-	return { outline, sections: capped };
+	return { outline, sections: capped, continued };
 }
 
 export interface ScrapeOptions {
@@ -350,10 +410,9 @@ export interface ScrapeOptions {
 const SHORT_LINE_JOIN = 28;
 const NAV_LABEL_MAX = 40;
 const NAV_BLOCK_MAX = 90;
-const OUTLINE_CAP = 14;
+const OUTLINE_CAP = 20;
 const OUTLINE_LINE_MAX = 90;
 const MIN_OUTLINE_FOR_ECHO = 3;
-const CAP_BREAK_GRACE = 400;
 const SECTION_MIN = 12;
 
 const LOCAL_MIN_TEXT = 240;
@@ -370,6 +429,7 @@ function abortResult(url: URL): ScrapeResult {
 		sections: [],
 		text: '',
 		truncated: false,
+		continued: [],
 		error: ABORT_ERROR,
 	};
 }
@@ -383,6 +443,7 @@ function errorResult(url: URL, error: string): ScrapeResult {
 		sections: [],
 		text: '',
 		truncated: false,
+		continued: [],
 		error,
 	};
 }
@@ -405,12 +466,12 @@ async function tryLocal(
 		text = extracted.text;
 	}
 	if (render === 'auto' && text.length < LOCAL_MIN_TEXT) return undefined;
-	const { outline, sections } = sliceSections(text, sectionCap);
+	const { outline, sections, continued } = sliceSections(text, sectionCap);
 	const { text: out, truncated } = joinSections(outline, sections, maxChars);
 	if (render === 'auto' && (sections.length === 0 || out.length < LOCAL_MIN_OUTPUT || isLowQualityOutput(out))) {
 		return undefined;
 	}
-	return { url: url.toString(), title, renderer: 'local', outline, sections, text: out, truncated };
+	return { url: url.toString(), title, renderer: 'local', outline, sections, continued, text: out, truncated };
 }
 
 function fromChain(
@@ -426,9 +487,9 @@ function fromChain(
 		markdown = extracted.text;
 		if (extracted.title) title = extracted.title;
 	}
-	const { outline, sections } = sliceSections(markdown, sectionCap);
+	const { outline, sections, continued } = sliceSections(markdown, sectionCap);
 	const { text, truncated } = joinSections(outline, sections, maxChars);
-	return { url: url.toString(), title, renderer: doc.renderer, outline, sections, text, truncated };
+	return { url: url.toString(), title, renderer: doc.renderer, outline, sections, continued, text, truncated };
 }
 
 export async function scrape(urlRaw: string, opts: ScrapeOptions = {}): Promise<ScrapeResult> {

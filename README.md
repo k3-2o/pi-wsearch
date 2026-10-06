@@ -34,10 +34,10 @@ you to find the signal. `web.fetch` breaks any page into an outline of every
 section and answers by number: `{url, sections: [0, 3]}` fetches just two
 sections of the fetched page. The agent surveys the map, picks what matters,
 and reads only those. No
-full reads, no 40 KB dumps. Truncation is layered: sections over 3,000
-characters are cut with the tail marked unreachable; pages that overflow are
-capped; the final response is clipped. Every cut is marked; the truncated
-part is named, not lost.
+full reads, no 40 KB dumps. Sections over 3,000 characters split into
+addressable continuation entries (`Section (cont. 1)`), so no tail is ever
+unreachable; pages that overflow are capped; the final response is clipped.
+Every cut is marked — nothing is silently lost.
 
 **Reads are free.** Page parsing is built in, nothing billed per read, no key
 required. Real headings become the map, TOC echoes get dropped, so reads come

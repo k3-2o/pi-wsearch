@@ -193,7 +193,7 @@ export function registerWebTools(pi: ExtensionAPI) {
 
 		async execute(_id, params, signal) {
 			const cfg = getConfig();
-			const key = cacheKey(['fetch', normalizeUrl(params.url)]);
+			const key = cacheKey(['fetch', 'v3', normalizeUrl(params.url)]);
 			const cached = cache.get(key) as Awaited<ReturnType<typeof scrape>> | undefined;
 			if (cached) return makeFetchResult(cached, params);
 			const res = await scrape(params.url, {
@@ -246,7 +246,12 @@ function colorizedResult(text: string, theme: Theme): string {
 	return text
 		.split('\n')
 		.map((l) => {
-			if (l.includes('…[section truncated') || l.startsWith('…[clipped by tool]') || l.startsWith('…[truncated]'))
+			if (
+				l.includes('…[section truncated') ||
+				l.includes('…(continues at outline index') ||
+				l.startsWith('…[clipped by tool]') ||
+				l.startsWith('…[truncated]')
+			)
 				return theme.fg('warning', l);
 			if (l.startsWith('## [')) return theme.fg('accent', l);
 			if (l.startsWith('- ')) return theme.fg('dim', l);
@@ -316,7 +321,7 @@ function buildFetchResult(res: Awaited<ReturnType<typeof scrape>>, sections: num
 	if (res.renderer && res.renderer !== 'local') text += `\n\n[rendered via ${res.renderer}]`;
 	const clipped = text.length > MAX_FETCH_TEXT ? text.slice(0, MAX_FETCH_TEXT) + '\n…[clipped by tool]' : text;
 	const missing = sections.filter((i) => i >= res.sections.length);
-	const truncatedCount = want.filter((idx) => res.sections[idx]?.includes('…[section truncated]')).length;
+	const truncatedCount = want.filter((idx) => res.continued?.includes(idx)).length;
 	const details = {
 		url: res.url,
 		title: res.title,
