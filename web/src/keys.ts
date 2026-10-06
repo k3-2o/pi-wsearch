@@ -1,11 +1,7 @@
 /**
- * Key-file management + status text for the /websearch command.
- * Pure logic, no pi imports: testable under bun.
- *
- * The dedicated key file (~/.pi/agent/wsearch/env) is the only file this
- * extension ever writes. Writes are atomic (temp + rename) and always 0600.
- * It only touches lines belonging to the target provider's env names -
- * other keys, comments, and unrelated lines are preserved byte-for-byte.
+ * Key-file management for /websearch. The dedicated wsearch/env file is the
+ * only file this extension ever writes; writes are atomic and always 0600,
+ * and only the target provider's lines are touched.
  */
 import { mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -21,7 +17,6 @@ import {
 
 const PROVIDER_IDS = PROVIDER_LIST.map((p) => p.id);
 
-/** Which name(s) identify a provider in the file: canonical + aliases. */
 function providerNames(p: ProviderInfo): string[] {
 	return [p.envName, ...p.aliases];
 }
@@ -34,14 +29,9 @@ function readFile(path: string): string {
 	}
 }
 
-/**
- * Rewrite the file with a provider's lines replaced/removed, others preserved.
- * @param mutations map of env name -> new value | undefined (undefined = remove)
- */
 function mutateFile(mutations: Map<string, string | undefined>): void {
 	const path = keyFilePath();
 	const lines = readFile(path).split('\n');
-	// drop EVERY line whose env name is being mutated (old value, old alias)
 	const out = lines.filter((raw) => {
 		const pair = parseEnvLine(raw);
 		return !pair || !mutations.has(pair[0]);
@@ -64,20 +54,21 @@ function writeAtomic(path: string, content: string): void {
 	renameSync(tmp, path);
 }
 
-/** Write or replace a provider's key in the dedicated env file (0600, atomic). */
+const allNamesRemoved = (p: ProviderInfo): Map<string, string | undefined> =>
+	new Map(providerNames(p).map((n) => [n, undefined]));
+
+/** Write or replace a provider's key in the dedicated env file. */
 export function writeKey(p: ProviderInfo, value: string): void {
-	const mutations = new Map<string, string | undefined>();
-	for (const n of providerNames(p)) mutations.set(n, undefined); // clear all aliases
+	const mutations = allNamesRemoved(p);
 	mutations.set(p.envName, value.trim());
 	mutateFile(mutations);
 }
 
-/** Remove a provider's key from the dedicated env file. */
+/** Remove a provider's key lines from the dedicated env file. */
 export function removeKey(p: ProviderInfo): void {
-	writeKey(p, '');
+	mutateFile(allNamesRemoved(p));
 }
 
-/** Human status block for /websearch status. */
 export function statusText(): string {
 	const st = keyStatus();
 	const origins = keyOrigins();
@@ -92,7 +83,6 @@ export function statusText(): string {
 	lines.push(`  dormant: ${dormant.length ? dormant.join(', ') : '(none)'}`);
 	const chain = cfg.fetchChain ? cfg.fetchChain.replace(/,/g, ', ') : 'firecrawl, tavily, exa, jina';
 	lines.push(`  fetch:   local → ${chain}`);
-	// env knobs shown only when set (default: all configured engines / default chain)
 	const knobs = [];
 	if (cfg.searchEngines) knobs.push(`WSEARCH_ENGINES=${cfg.searchEngines}`);
 	if (cfg.fetchChain) knobs.push(`WSEARCH_FETCH_CHAIN=${cfg.fetchChain}`);

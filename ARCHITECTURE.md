@@ -91,7 +91,11 @@ insufficient. The empirical anchors:
   input**: quoted, sectioned, never favored for being "found first".
 
 → **Implemented:** cross-engine triangulation (a hit must survive the RRF merge of
-  independent engines), junk/spam downranking, SSRF guard (private/loopback rejected),
+  independent engines), junk/spam downranking, SSRF guard (private/loopback
+  rejected for numeric literals, canonicalized: bracketed IPv6, IPv4-mapped
+  IPv6, WHATWG-normalized decimal/hex/shorthand forms. Hostnames that resolve
+  into private space are deliberately out of scope: the threat model is
+  literals the hostile web can point the agent at)
   and fetched content is surfaced to the agent as data to verify, not truth.
 
 ---
@@ -121,7 +125,9 @@ Pi extension (TypeScript, `pi.registerTool`, in-process), `web` namespace:
 - **Provider pockets are key-gated**: an engine (serper/tavily/exa/brave/jina/kagi/you/firecrawl/tinyfish)
   runs only when its key/endpoint/self-host is configured; a reader backend
   (firecrawl/tavily/exa/jina extract) only when its key is. Adding a provider
-  = one registry entry (`engines.ts` / `scrape.ts`) + one key spec (`config.ts`); the
+  = one SPECS entry (`config.ts` catalog: id + config field + env names; config
+  assembly, `keyStatus` and `sanitizeError` all derive from it) + one key-gated
+  registry entry + adapter (`engines.ts` / `scrape.ts`) + one display label; the
   tools never hardcode a count. `WSEARCH_ENGINES` and `WSEARCH_FETCH_CHAIN` subset/
   reorder at runtime. Search keys double as reader keys where the provider offers both
   (Tavily, Exa). **There are no keyless engines** — every pocket needs a key or a

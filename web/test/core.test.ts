@@ -20,12 +20,24 @@ import {
 	keyFilePath,
 	keyOrigins,
 	PROVIDERS,
+	SPECS,
 } from '../src/config';
 import { writeKey, removeKey, statusText } from '../src/keys';
 import { cacheKey, openCache } from '../src/cache';
 import { postJson, runEngines } from '../src/engines';
-import { fuse, diversifyByHost, normalizeUrl, type FusedHit } from '../src/fuse';
-import { decodeHtmlEntities, extractHtml, pageSlice, sliceSections, scrape, validateUrl } from '../src/scrape';
+import { fuse, diversifyByHost, type FusedHit } from '../src/fuse';
+import { normalizeUrl } from '../src/urls';
+import {
+	decodeHtmlEntities,
+	extractHtml,
+	isPrivateHost,
+	joinSections,
+	pageSlice,
+	sliceSections,
+	scrape,
+	validateUrl,
+} from '../src/scrape';
+import { stubReader } from '../src/transport';
 
 let server: Server;
 let allowPrivate = false;
@@ -57,6 +69,14 @@ beforeAll(async () => {
 			}, 15_000);
 			res.setHeader('content-type', 'text/html');
 			res.on('close', () => clearTimeout(t));
+		} else if (u.pathname === '/big') {
+			// 12 sections x ~3KB each: exceeds the composed 12KB cap, so the
+			// joined text must be marked truncated (never silently cut)
+			let html = '<!doctype html><html><head><title>Big</title></head><body>';
+			for (let i = 0; i < 12; i++) html += `<h2>Section ${i}</h2><p>${'w'.repeat(3000)}</p>`;
+			html += '</body></html>';
+			res.setHeader('content-type', 'text/html');
+			res.end(html);
 		} else {
 			res.statusCode = 404;
 			res.end('not found');
@@ -79,17 +99,8 @@ describe('config / secrets', () => {
 		expect(typeof st.serper).toBe('boolean');
 		const cfg = getConfig();
 		// identity check: if env has the key, the config must have loaded exactly it
-		for (const [envName, field] of [
-			['SERPER_API_KEY', 'serperKey'],
-			['TAVILY_API_KEY', 'tavilyKey'],
-			['EXA_API_KEY', 'exaKey'],
-			['FIRECRAWL_API_KEY', 'firecrawlKey'],
-			['BRAVE_API_KEY', 'braveKey'],
-			['JINA_API_KEY', 'jinaKey'],
-			['KAGI_API_KEY', 'kagiKey'],
-			['YDC_API_KEY', 'youKey'],
-			['TINYFISH_API_KEY', 'tinyfishKey'],
-		] as const) {
+		// (the pair list derives from the catalog so it cannot drift from SPECS)
+		for (const [envName, field] of SPECS.map((s) => [s.envNames[0], s.key] as const)) {
 			const env = process.env[envName];
 			if (env && env.length > 4) expect((cfg as any)[field]).toBe(env);
 		}
@@ -102,9 +113,19 @@ describe('config / secrets', () => {
 		expect(parseEnvLine('TAVILY_API_KEY="abc123"')).toEqual(['TAVILY_API_KEY', 'abc123']);
 		expect(parseEnvLine("EXA_API_KEY='def456'")).toEqual(['EXA_API_KEY', 'def456']);
 		expect(parseEnvLine('set -gx KAGI_API_KEY ghi789')).toEqual(['KAGI_API_KEY', 'ghi789']);
+		expect(parseEnvLine('set -x BRAVE_API_KEY ghi789')).toEqual(['BRAVE_API_KEY', 'ghi789']); // fish without -g
 		expect(parseEnvLine('$env.YDC_API_KEY = "jkl012"')).toEqual(['YDC_API_KEY', 'jkl012']);
 		expect(parseEnvLine('# a comment')).toBeNull();
 		expect(parseEnvLine('ls -la')).toBeNull();
+	});
+	test('parseEnvLine strips trailing comments but keeps # inside values/quotes', () => {
+		expect(parseEnvLine('export TAVILY_API_KEY=abc12345 # my key')).toEqual(['TAVILY_API_KEY', 'abc12345']);
+		expect(parseEnvLine("export SERPER_API_KEY='abc12345' # my key")).toEqual(['SERPER_API_KEY', 'abc12345']);
+		expect(parseEnvLine('set -gx EXA_API_KEY def45678 # comment')).toEqual(['EXA_API_KEY', 'def45678']);
+		expect(parseEnvLine('$env.KAGI_API_KEY = "ghi78901" # comment')).toEqual(['KAGI_API_KEY', 'ghi78901']);
+		// a # inside a quoted value, or mid-token, is content, not a comment
+		expect(parseEnvLine('export FOO="a#b"')).toEqual(['FOO', 'a#b']);
+		expect(parseEnvLine('export BAR=abc#def')).toEqual(['BAR', 'abc#def']);
 	});
 	test('parseEnvText merges and keeps the first occurrence', () => {
 		const map = parseEnvText(['A=1', 'A=2', 'export B="x y"', 'set -gx C z'].join('\n'));
@@ -259,6 +280,50 @@ describe('abort (cooperative signals)', () => {
 		expect(res.error).toMatch(/abort/i);
 		expect(res.renderer).toBe('local');
 	});
+
+	test('abort landing INSIDE a reader attempt returns the abort message, never a raw TypeError', async () => {
+		// /thin fails local extraction in auto mode -> the reader chain starts;
+		// abort lands while the first backend is suspended. Stub all backends so
+		// no real network is touched, and count rejects to prove no paid reader
+		// ran to completion.
+		let rejected = 0;
+		let completed = false;
+		const hanging = {
+			available: () => true,
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- signal drives the reject
+			read: (_url: URL, signal?: AbortSignal) =>
+				new Promise<{ title: string; markdown: string }>((resolve, reject) => {
+					if (signal?.aborted) return reject(new Error('aborted'));
+					signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+					void resolve; // never resolves: only the abort releases this attempt
+				}),
+		};
+		const restore = [
+			stubReader('firecrawl', hanging),
+			stubReader('tavily', hanging),
+			stubReader('exa', hanging),
+			stubReader('jina', hanging),
+		];
+		try {
+			const ctrl = new AbortController();
+			const t0 = Date.now();
+			const p = scrape(`http://127.0.0.1:${port()}/thin`, {
+				allowPrivate,
+				render: 'auto',
+				signal: ctrl.signal,
+			});
+			setTimeout(() => ctrl.abort(new Error('user interrupt')), 60);
+			const res = await p;
+			expect(Date.now() - t0).toBeLessThan(5000);
+			expect(res.error).toMatch(/abort/i);
+			expect(res.error).not.toMatch(/cannot read|properties of null|typeerror/i);
+			expect(res.renderer).toBe('local');
+			expect(rejected).toBeLessThanOrEqual(1);
+			expect(completed).toBe(false);
+		} finally {
+			for (const r of restore) r();
+		}
+	});
 });
 
 describe('engines (live)', () => {
@@ -281,6 +346,14 @@ describe('engines (live)', () => {
 			}
 		}
 	}, 40000);
+	test('runEngines with an empty pin reports the real cause instead of masking it', async () => {
+		// an empty engines pin never selects anything, deterministically: the
+		// synthetic 'none' outcome must say WHY (no keys / bad pin), not vanish
+		const outcomes = await runEngines({ query: 'x', engines: [] });
+		expect(outcomes).toHaveLength(1);
+		expect(outcomes[0].engine).toBe('none');
+		expect(outcomes[0].error).toMatch(/no search engine keys configured|no configured engines/i);
+	});
 });
 
 const mkHit = (url: string, engine: string, title = url, snippet = 's'): FusedHit => ({
@@ -307,12 +380,18 @@ describe('fuse', () => {
 		];
 		const fused = fuse(outcomes as any);
 		expect(fused.length).toBe(2);
-		const merged = fused.find((r) => normalizeUrl(r.url) === 'example.com/a');
+		const merged = fused.find((r) => normalizeUrl(r.url) === 'https://example.com/a');
 		expect(merged).toBeDefined();
 		expect(merged!.engines.toSorted()).toEqual(['serper', 'tavily']);
 	});
 	test('strips tracking params in normalizeUrl', () => {
-		expect(normalizeUrl('https://a.com/x?utm_source=1&id=2#frag')).toBe('a.com/x?id=2');
+		expect(normalizeUrl('https://a.com/x?utm_source=1&id=2#frag')).toBe('https://a.com/x?id=2');
+	});
+	test('normalizeUrl keeps scheme+port and sorts query keys', () => {
+		expect(normalizeUrl('https://x.com/a?b=2&a=1')).toBe('https://x.com/a?a=1&b=2');
+		expect(normalizeUrl('http://x.com/a')).not.toBe(normalizeUrl('https://x.com/a'));
+		expect(normalizeUrl('https://x.com:8443/a')).toBe('https://x.com:8443/a');
+		expect(normalizeUrl('https://www.x.com/a')).toBe('https://x.com/a');
 	});
 	test('junk downranking sinks score', () => {
 		const outcomes = [
@@ -467,6 +546,16 @@ describe('fuse', () => {
 		expect(twin.engines).toContain('b');
 		expect(fused.some((r) => r.url.includes('distinct.example.com'))).toBe(true);
 	});
+	test('one shared word repeated many times does NOT merge distinct pages', () => {
+		// only 'guide' overlaps; the old occurrence-count Jaccard merged these
+		// at >= 1.0. Bag semantics (dedupe both titles) keep jacc < 0.85.
+		const outcomes = [
+			{ engine: 'a', hits: [mkHit('https://a.example.com/x', 'a', 'SQLite Guide Guide Guide')], latencyMs: 1 },
+			{ engine: 'b', hits: [mkHit('https://b.example.com/y', 'b', 'Rust Guide Guide Guide Guide')], latencyMs: 1 },
+		];
+		const fused = fuse(outcomes as any, {});
+		expect(fused.length).toBe(2);
+	});
 });
 
 describe('cache', () => {
@@ -482,6 +571,20 @@ describe('cache', () => {
 		const k2 = cacheKey(['expired']);
 		c.set(k2, { v: 2 }, -1_000);
 		expect(c.get(k2)).toBeUndefined();
+		rmSync(dir, { recursive: true, force: true });
+	});
+	test('expired entries are purged on reload, not carried across restarts', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'wsearch-purge-'));
+		const path = join(dir, 'c.json');
+		const stale = cacheKey(['stale']);
+		const c = openCache(path);
+		c.set(stale, { v: 1 }, -1_000);
+		c.set(cacheKey(['fresh']), { v: 2 }, 60_000); // persists BOTH (stale still in store)
+		const c2 = openCache(path); // load() must purge the expired entry in memory
+		c2.set(cacheKey(['fresh2']), { v: 3 }, 60_000); // persists the purged store
+		const raw = JSON.parse(await Bun.file(path).text()) as { entries: Record<string, unknown> };
+		expect(Object.keys(raw.entries)).not.toContain(stale);
+		expect(c2.get(stale)).toBeUndefined();
 		rmSync(dir, { recursive: true, force: true });
 	});
 });
@@ -588,6 +691,24 @@ describe('scrape', () => {
 		expect(lines.has('• Install the package')).toBe(true);
 		expect(text).not.toContain('Get the key Install');
 	});
+	test('joinSections marks truncation and never exceeds maxChars', () => {
+		const sections = ['# A\n' + 'x '.repeat(4000), '# B\n' + 'y '.repeat(4000)];
+		const { text, truncated } = joinSections(['A', 'B'], sections, 600);
+		expect(truncated).toBe(true);
+		expect(text).toContain('[truncated]');
+		expect(text.length).toBeLessThanOrEqual(600);
+		// small content: no marker, no truncation
+		const small = joinSections(['A'], ['# A\nbody'], 1000);
+		expect(small.truncated).toBe(false);
+		expect(small.text).not.toContain('[truncated]');
+	});
+	test('oversized page scrape reports truncated=true with the marker', async () => {
+		const res = await scrape(`http://127.0.0.1:${port()}/big`, { allowPrivate, render: 'local' });
+		expect(res.error).toBeUndefined();
+		expect(res.truncated).toBe(true);
+		expect(res.text).toContain('[truncated]');
+		expect(res.text.length).toBeLessThanOrEqual(12000);
+	});
 	test('local fetch + extraction against local server', async () => {
 		const res = await scrape(`http://127.0.0.1:${port()}/docs`, { allowPrivate, render: 'local' });
 		expect(res.error).toBeUndefined();
@@ -599,6 +720,36 @@ describe('scrape', () => {
 	test('rejects private hosts by default and bad schemes', () => {
 		expect(() => validateUrl(`http://127.0.0.1:${port()}/docs`, false)).toThrow(/private/);
 		expect(() => validateUrl('file:///etc/passwd', true)).toThrow(/protocol/);
+	});
+	test('SSRF guard canonicalizes IPv6, mapped, and obfuscated forms', () => {
+		// bracketed IPv6 that URL keeps in brackets (the old gate never matched)
+		expect(isPrivateHost('[::1]')).toBe(true);
+		expect(isPrivateHost('[fd00::1]')).toBe(true);
+		expect(isPrivateHost('[fe80::1]')).toBe(true);
+		expect(isPrivateHost('[2001:db8::1]')).toBe(false);
+		// full-form loopback normalizes to ::1 via URL in validateUrl, and here too
+		expect(isPrivateHost('0:0:0:0:0:0:0:1')).toBe(true);
+		expect(isPrivateHost('[0:0:0:0:0:0:0:1]')).toBe(true);
+		// IPv4-mapped IPv6: hex-encoded v4 tail
+		expect(isPrivateHost('[::ffff:7f00:1]')).toBe(true); // 127.0.0.1
+		expect(isPrivateHost('[::ffff:a00:1]')).toBe(true); // 10.0.0.1
+		expect(isPrivateHost('[::ffff:cb00:7107]')).toBe(false); // 203.0.113.7, public
+		expect(isPrivateHost('[::1.2.3.4]')).toBe(false); // dotted form, public
+		// dotted-shorthand/obfuscated IPv4 (WHATWG already normalizes; guard catches)
+		expect(isPrivateHost('2130706433')).toBe(true); // 127.0.0.1 decimal
+		expect(isPrivateHost('0x7f.0.0.1')).toBe(true);
+		expect(isPrivateHost('127.1')).toBe(true);
+		expect(isPrivateHost('169.254.5.5')).toBe(true);
+		expect(isPrivateHost('8.8.8.8')).toBe(false);
+		expect(isPrivateHost('example.com')).toBe(false);
+	});
+	test('validateUrl rejects the hostile-url classics end to end', () => {
+		expect(() => validateUrl('http://[::1]/admin')).toThrow(/private/);
+		expect(() => validateUrl('http://[::ffff:7f00:1]/')).toThrow(/private/);
+		expect(() => validateUrl('http://2130706433/')).toThrow(/private/);
+		expect(() => validateUrl('http://0x7f.0.0.1/')).toThrow(/private/);
+		expect(() => validateUrl('http://127.1/')).toThrow(/private/);
+		expect(() => validateUrl('https://8.8.8.8/')).not.toThrow();
 	});
 	test('thin page: forced-local succeeds (thin is fine); auto falls to the reader chain (cannot reach localhost) → error', async () => {
 		const forced = await scrape(`http://127.0.0.1:${port()}/thin`, {
