@@ -1,20 +1,8 @@
-# dependencies
 node_modules/
 *.log
-
-# python
 __pycache__/
 *.pyc
-
-# generated research artifacts (reproducible via search.py / fetch.py)
-research/web_search/corpus.json
-research/web_search/corpus_academic.json
-research/web_search/sources/
-
-# os / editor
 .DS_Store
 *.tmp
-
-# local-only agent docs (handoff for the next session; not repo content)
 AGENTS.md
 .agents/

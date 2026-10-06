@@ -4,7 +4,7 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { createServer, type Server } from 'node:http';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -21,8 +21,11 @@ import {
 	keyOrigins,
 	PROVIDERS,
 	SPECS,
+	disabledFlagPath,
 } from '../src/config';
 import { writeKey, removeKey, statusText } from '../src/keys';
+import { registerWebTools, FETCH_PARAMS } from '../src/tools';
+import { validateToolArguments } from '@earendil-works/pi-ai';
 import { cacheKey, openCache } from '../src/cache';
 import { postJson, runEngines } from '../src/engines';
 import { fuse, diversifyByHost, type FusedHit } from '../src/fuse';
@@ -32,7 +35,6 @@ import {
 	extractHtml,
 	isPrivateHost,
 	joinSections,
-	pageSlice,
 	sliceSections,
 	scrape,
 	validateUrl,
@@ -209,6 +211,33 @@ describe('config / secrets', () => {
 		expect(text).toContain('armed:');
 		expect(text).toContain('dormant:');
 		expect(text).toMatch(/fetch:\s+local →/);
+	});
+	test('off flag toggles status and registerWebTools exposure', () => {
+		const dir = mkdtempSync(join(tmpdir(), 'pi-wsearch-off-'));
+		process.env.WSEARCH_CACHE_DIR = dir;
+		resetConfigCache();
+		try {
+			expect(disabledFlagPath()).toBe(join(dir, 'off'));
+			expect(existsSync(disabledFlagPath())).toBe(false);
+			expect(statusText()).toContain('web tools: ON');
+
+			const regs: Array<{ name: string; exposure?: string }> = [];
+			const stub = {
+				registerTool: (tool: { name: string; exposure?: string }) => void regs.push(tool),
+			} as unknown as Parameters<typeof registerWebTools>[0];
+			registerWebTools(stub);
+			expect(regs.map((r) => r.exposure)).toEqual(['direct', 'direct']);
+
+			writeFileSync(disabledFlagPath(), '');
+			expect(statusText()).toContain('web tools: OFF');
+			regs.length = 0;
+			registerWebTools(stub);
+			expect(regs.map((r) => r.exposure)).toEqual(['hidden', 'hidden']);
+		} finally {
+			delete process.env.WSEARCH_CACHE_DIR;
+			resetConfigCache();
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 	test('knobs resolve from the wsearch env file and env wins', () => {
 		const dir = mkdtempSync(join(tmpdir(), 'pi-wsearch-knob-'));
@@ -499,28 +528,6 @@ describe('fuse', () => {
 		const noQuery = fuse(outcomes as any, {});
 		expect(noQuery[0].url).toBe('https://a.com/generic');
 	});
-	test('recency boost lifts a fresh hit within the freshness window', () => {
-		const outcomes = [
-			{
-				engine: 'a',
-				hits: [
-					mkHit('https://a.com/old', 'a', 'An older article about databases'),
-					mkHit('https://b.com/fresh', 'a', 'The newest database guide'),
-				],
-				latencyMs: 1,
-			},
-		];
-		(outcomes[0].hits[0] as any).date = '2019-01-01';
-		(outcomes[0].hits[1] as any).date = new Date().toISOString();
-		const withFresh = fuse(outcomes as any, { freshness: 'day' });
-		const without = fuse(outcomes as any, {});
-		const freshWith = withFresh.find((r) => r.url.includes('b.com'))!.finalScore;
-		const oldWith = withFresh.find((r) => r.url.includes('a.com'))!.finalScore;
-		const freshWithout = without.find((r) => r.url.includes('b.com'))!.finalScore;
-		const oldWithout = without.find((r) => r.url.includes('a.com'))!.finalScore;
-		expect(freshWith).toBeGreaterThan(oldWith);
-		expect(freshWithout).not.toBeGreaterThan(oldWithout);
-	});
 	test('near-duplicate titles collapse into one result and merge engines', () => {
 		const outcomes = [
 			{
@@ -652,6 +659,43 @@ describe('scrape', () => {
 		expect(sections.length).toBeGreaterThanOrEqual(2);
 	});
 
+	test('sliceSections aligns outline[i] with sections[i] via a synthesized (lead) entry', () => {
+		const doc = [
+			'RePL Guide',
+			'Intro paragraph before any heading — the page lead.',
+			'## History',
+			'history body',
+			'## Overview',
+			'overview body',
+			'## Uses',
+			'uses body',
+		].join('\n\n');
+		const { outline, sections } = sliceSections(doc, 3000);
+		expect(outline[0]).toBe('(lead)');
+		expect(outline).toEqual(['(lead)', 'History', 'Overview', 'Uses']);
+		// body i must sit under its outline name: section[i] contains outline[i+0]'s heading
+		expect(sections[0]).not.toMatch(/^#/); // lead is heading-less
+		expect(sections[1]).toContain('## History');
+		expect(sections[2]).toContain('## Overview');
+		expect(sections[3]).toContain('## Uses');
+	});
+
+	test('search drops engines that error or return nothing useful', async () => {
+		const { fuse } = await import('../src/fuse');
+		const outcomes = [
+			{ engine: 'dead', error: 'HTTP 500', hits: [], latencyMs: 10 },
+			{ engine: 'empty', hits: [], latencyMs: 10 }, // exhausted: no error, nothing useful
+			{
+				engine: 'good',
+				hits: [{ title: 'Hit', url: 'https://a.com/x', snippet: 'good', engine: 'good' }],
+				latencyMs: 10,
+			},
+		];
+		const f = fuse(outcomes as never, { query: 'q' });
+		const engines = [...new Set(f.flatMap((r) => r.engines))];
+		expect(engines).toEqual(['good']); // problem engines contribute nothing and are invisible
+	});
+
 	test('sliceSections collapses 3+ newline runs, drops boilerplate, caps at paragraph boundary', () => {
 		const text =
 			`# Real Heading\n\nSkip to content\n\nUseful paragraph one.\n\nRelated articles\n\nUseful paragraph two.\n\n[About](/about) [Docs](/docs) [Blog](/blog)\n\n` +
@@ -671,7 +715,7 @@ describe('scrape', () => {
 		const long = `# H\n\n` + 'word '.repeat(1000);
 		const { sections: cappedSections } = sliceSections(long, 200);
 		const capped = cappedSections[0];
-		expect(capped).toContain('[section truncated]');
+		expect(capped).toContain('[section truncated: capped at 200 chars');
 		// never cuts mid-word: the cut lands on a space immediately before the marker
 		expect(/\w…/.test(capped)).toBe(false);
 	});
@@ -762,53 +806,23 @@ describe('scrape', () => {
 		expect(auto.error).toBeDefined();
 	}, 90000);
 
-	// ---- pageSlice: read-tool style line paging ----------------------------
-	test('pageSlice pages across sections with cursor semantics', () => {
-		const sections = ['# One\n' + 'a'.repeat(50), '# Two\n' + 'b'.repeat(50), '# Three\n' + 'c'.repeat(50)];
-		// joined: # One / aaa / ∅ / # Two / bbb / ∅ / # Three / ccc → 8 lines
-		const first = pageSlice(sections, 1, 3);
-		expect(first.content.split('\n')).toHaveLength(3);
-		expect(first.content.startsWith('# One')).toBe(true);
-		expect(first.total).toBe(8);
-		expect(first.nextOffset).toBe(4);
-		expect(first.remaining).toBe(5);
-
-		const mid = pageSlice(sections, 4, 5);
-		expect(mid.content).toContain('# Two');
-		expect(mid.nextOffset).toBeNull();
-		expect(mid.remaining).toBe(0);
-		expect(mid.content).toContain('ccc');
-
-		const last = pageSlice(sections, 8, 10);
-		expect(last.content).toBe('c'.repeat(50));
-		expect(last.nextOffset).toBeNull();
-	});
-
-	test('pageSlice handles boundaries: offset past end, zero sections, chosen indices', () => {
-		const sections = ['# A\ncontent a', '# B\ncontent b', '# C\ncontent c'];
-		const pastEnd = pageSlice(sections, 99999, 1000);
-		expect(pastEnd.content).toBe('');
-		expect(pastEnd.nextOffset).toBeNull();
-		expect(pastEnd.remaining).toBe(0);
-
-		const clamped = pageSlice(sections, 0, 2); // offset 0 treated as line 1
-		expect(clamped.content).toContain('# A');
-
-		const empty = pageSlice([], 1, 1000);
-		expect(empty.total).toBe(0);
-		expect(empty.nextOffset).toBeNull();
-
-		// sections restrict the stream; offsets refer to the chosen subset
-		const chosen = pageSlice(sections, 1, 100, [1, 2]);
-		expect(chosen.total).toBeLessThan(pageSlice(sections, 1, 1000).total);
-		expect(chosen.content).toContain('# B');
-		expect(chosen.content).not.toContain('# A');
-	});
-
-	test('pageSlice is deterministic for identical sections', () => {
-		const sections = ['# X\n' + 'x'.repeat(900), '# Y\n' + 'y'.repeat(900)];
-		const a = pageSlice(sections, 1, 5);
-		const b = pageSlice(sections, 1, 5);
-		expect(a).toEqual(b);
+	// ---- bonded fetch schema: sections is the only address ------------------
+	test('FETCH_PARAMS accepts section reads and rejects everything else', () => {
+		const tool = { name: 'web.fetch', parameters: FETCH_PARAMS } as never;
+		const validate = (args: Record<string, unknown>) => {
+			try {
+				validateToolArguments(tool, { name: 'web.fetch', arguments: args } as never);
+				return true;
+			} catch {
+				return false;
+			}
+		};
+		expect(validate({ url: 'https://example.com/a', sections: [0] })).toBe(true);
+		expect(validate({ url: 'https://example.com/a', sections: [0, 1, 2] })).toBe(true);
+		expect(validate({ url: 'https://example.com/a' })).toBe(false); // bare url
+		expect(validate({ url: 'https://example.com/a', sections: [] })).toBe(false);
+		expect(validate({ url: 'https://example.com/a', sections: [0], offset: 5 })).toBe(false);
+		expect(validate({ url: 'https://example.com/a', sections: [0], limit: 25 })).toBe(false);
+		expect(validate({ sections: [0] })).toBe(false);
 	});
 });

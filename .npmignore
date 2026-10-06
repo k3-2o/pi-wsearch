@@ -1,0 +1,12 @@
+node_modules/
+.git/
+.gitignore
+.npmignore
+.agents/
+.oxfmtrc.json
+.oxlintrc.json
+tsconfig.json
+bun.lock
+coverage/
+test/
+AGENTS.md

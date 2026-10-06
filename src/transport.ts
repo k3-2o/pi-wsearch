@@ -21,7 +21,7 @@ const USER_AGENTS = [
 	'Mozilla/5.0 (compatible; TextBot/1.0)',
 	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 pi-web-search/0.1',
 ];
-export const MAX_HTML_BYTES = 5 * 1024 * 1024;
+const MAX_HTML_BYTES = 5 * 1024 * 1024;
 const LOCAL_TIMEOUT_MS = 15_000;
 const RETRY_AFTER_MAX_MS = 10_000;
 const READER_TIMEOUTS: Record<RemoteRenderer, number> = {
@@ -31,7 +31,7 @@ const READER_TIMEOUTS: Record<RemoteRenderer, number> = {
 	jina: 20_000,
 };
 
-export function isBotBlocked(status: number, content: string): boolean {
+function isBotBlocked(status: number, content: string): boolean {
 	if (status !== 403 && status !== 503) return false;
 	const lower = content.toLowerCase();
 	return (
@@ -197,11 +197,7 @@ export async function localFetch(url: URL, signal?: AbortSignal): Promise<{ body
 
 // Per-attempt timeout + pre-abort: an already-aborted signal never fires
 // abort listeners, so the request must reject immediately on its own.
-export function withTimeout(
-	label: string,
-	ms: number,
-	signal?: AbortSignal,
-): { ctrl: AbortController; done: () => void } {
+function withTimeout(label: string, ms: number, signal?: AbortSignal): { ctrl: AbortController; done: () => void } {
 	const ctrl = new AbortController();
 	const t = setTimeout(() => ctrl.abort(new Error(`${label} timeout`)), ms);
 	const onAbort = () => ctrl.abort(signal?.reason ?? new Error(ABORT_ERROR));
@@ -339,7 +335,7 @@ const READERS: Record<RemoteRenderer, Reader> = {
 
 const REMOTE_ORDER: RemoteRenderer[] = ['firecrawl', 'tavily', 'exa', 'jina'];
 
-export function readerOrder(): RemoteRenderer[] {
+function readerOrder(): RemoteRenderer[] {
 	const raw = getConfig().fetchChain;
 	if (raw) {
 		const kept: RemoteRenderer[] = [];

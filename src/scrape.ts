@@ -17,8 +17,6 @@ import {
 	type Renderer,
 } from './transport';
 
-export { DEFAULT_SECTION_CAP, type Renderer } from './transport';
-
 export interface ScrapeResult {
 	url: string;
 	title: string;
@@ -32,7 +30,7 @@ export interface ScrapeResult {
 
 const DEFAULT_MAX_CHARS = 12000;
 
-export function stripToAscii(s: string): string {
+function stripToAscii(s: string): string {
 	return s
 		.replace(/\u00a0/g, ' ')
 		.replace(/\u200b/g, '')
@@ -328,11 +326,16 @@ export function sliceSections(
 		if (s.length > sectionCap) {
 			const cut = s.slice(0, sectionCap);
 			const at = cut.lastIndexOf('\n\n');
-			if (at > sectionCap - CAP_BREAK_GRACE) s = cut.slice(0, at) + '\n…[section truncated]';
-			else s = cut + ' …[section truncated]';
+			const note = `…[section truncated: capped at ${sectionCap} chars — the rest of this section is not retrievable]`;
+			if (at > sectionCap - CAP_BREAK_GRACE) s = cut.slice(0, at) + '\n' + note;
+			else s = cut + ' ' + note;
 		}
 		if (s.trim().length >= SECTION_MIN || /^#{1,6} /.test(s)) capped.push(s.trim());
 	}
+	// A leading heading-less section (the page lead) shifts every outline index off by one;
+	// synthesizing its outline entry keeps section[i] and outline[i] aligned and the lead requestable.
+	const preambleIdx = capped.findIndex((s) => !/^#{1,6} /.test(s));
+	if (preambleIdx === 0 && outline.length > 0) outline.unshift('(lead)');
 	return { outline, sections: capped };
 }
 
@@ -439,7 +442,8 @@ export async function scrape(urlRaw: string, opts: ScrapeOptions = {}): Promise<
 
 	if (render === 'local') {
 		try {
-			return await tryLocal(url, 'local', opts.signal, sectionCap, maxChars);
+			// undefined is auto-mode only (thin/empty gates); forced local always produces a result
+			return (await tryLocal(url, 'local', opts.signal, sectionCap, maxChars))!;
 		} catch (e) {
 			return opts.signal?.aborted ? abortResult(url) : errorResult(url, sanitizeError(e));
 		}
@@ -484,22 +488,3 @@ export function joinSections(
 }
 
 /** Deterministic over the cached sections: repeated offset reads avoid re-fetching. */
-export function pageSlice(
-	sections: string[],
-	offset: number,
-	limit: number,
-	chosen?: number[],
-): { content: string; total: number; nextOffset: number | null; remaining: number } {
-	const picked = chosen && chosen.length ? chosen.map((i) => sections[i] ?? '') : sections;
-	const joined = picked.join('\n\n').replace(/\n{3,}/g, '\n\n');
-	const lines = joined === '' ? [] : joined.split('\n');
-	const total = lines.length;
-	const start = Math.max(0, Math.min(offset < 1 ? 0 : offset - 1, total));
-	const end = Math.min(total, start + Math.max(0, limit));
-	return {
-		content: lines.slice(start, end).join('\n'),
-		total,
-		nextOffset: end >= total ? null : end + 1,
-		remaining: Math.max(0, total - end),
-	};
-}

@@ -12,6 +12,7 @@ import {
 	keyStatus,
 	parseEnvLine,
 	PROVIDERS as PROVIDER_LIST,
+	disabledFlagPath,
 	type ProviderInfo,
 } from './config';
 
@@ -76,6 +77,7 @@ export function statusText(): string {
 	const dormant = PROVIDER_IDS.filter((id) => !st[id]);
 	const cfg = getConfig();
 	const lines: string[] = [];
+	lines.push(`web tools: ${existsSync(disabledFlagPath()) ? 'OFF' : 'ON'}`);
 	lines.push(`web search: ${PROVIDER_IDS.length} pockets`);
 	lines.push(
 		armed.length ? `  armed:   ${armed.map((id) => `${id} ✓(${origins[id] ?? '?'})`).join(', ')}` : '  armed:   (none)',

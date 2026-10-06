@@ -1,6 +1,4 @@
 import type { EngineOutcome, SearchHit } from './engines';
-import type { Freshness } from './constants';
-import { FRESH_WINDOW_MS } from './constants';
 import { isJunk, normalizeUrl, hostOf } from './urls';
 
 export interface FusedHit extends SearchHit {
@@ -12,7 +10,6 @@ export interface FusedHit extends SearchHit {
 
 export interface FuseOptions {
 	query?: string;
-	freshness?: Freshness;
 }
 
 const RRF_K = 60;
@@ -151,26 +148,6 @@ function exactMatchBoost(hit: { title: string; snippet: string }, query: string 
 	return 0.3 * Math.min(1, matched / terms.length);
 }
 
-function dateToMs(date: string | undefined): number | null {
-	if (!date) return null;
-	const m = /(\d{4})-(\d{1,2})-(\d{1,2})/.exec(date);
-	if (m) {
-		const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime();
-		return Number.isNaN(d) ? null : d;
-	}
-	const d = Date.parse(date);
-	return Number.isNaN(d) ? null : d;
-}
-
-function recencyBoost(date: string | undefined, freshness: Freshness | undefined): number {
-	if (!freshness || freshness === 'none') return 0;
-	const windowMs = FRESH_WINDOW_MS[freshness];
-	const ts = dateToMs(date);
-	if (ts === null) return 0;
-	const ratio = Math.min(1, Math.max(0, 1 - (Date.now() - ts) / windowMs));
-	return 0.25 * ratio;
-}
-
 function normTitle(s: string): string {
 	return s
 		.toLowerCase()
@@ -210,7 +187,7 @@ function collapseNearDuplicates(fused: FusedHit[]): FusedHit[] {
 }
 
 export function fuse(outcomes: EngineOutcome[], opts: FuseOptions = {}): FusedHit[] {
-	const { query, freshness } = opts;
+	const { query } = opts;
 	const rank: Record<string, { hit: SearchHit; ranks: { engine: string; rank: number }[] }> = {};
 	let answering = 0;
 	for (const oc of outcomes) {
@@ -235,7 +212,6 @@ export function fuse(outcomes: EngineOutcome[], opts: FuseOptions = {}): FusedHi
 		const consensus = answering > 0 ? ranks.length / answering : 0;
 		let score = rrf + CONSENSUS_TIEBREAK * consensus;
 		score *= 1 + exactMatchBoost(hit, query);
-		score *= 1 + recencyBoost(hit.date, freshness);
 		if (hit.snippet.trim().length < 30) score *= 0.92;
 		if (junk) score *= 0.25;
 		fused.push({

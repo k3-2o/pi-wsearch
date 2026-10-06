@@ -1,7 +1,5 @@
 import { getConfig, sanitizeError, type ProviderKey, type WebConfig } from './config';
-import { ABORT_ERROR, DEFAULT_MAX_RESULTS, FRESHNESS_DAYS } from './constants';
-
-export type { Freshness } from './constants';
+import { ABORT_ERROR, DEFAULT_MAX_RESULTS } from './constants';
 
 export interface SearchHit {
 	title: string;
@@ -18,18 +16,16 @@ export interface EngineOutcome {
 	latencyMs: number;
 }
 
-export type EngineName = 'serper' | 'tavily' | 'exa' | 'brave' | 'jina' | 'kagi' | 'you' | 'firecrawl' | 'tinyfish';
-export type Freshness = 'none' | 'day' | 'week' | 'month' | 'year';
+type EngineName = 'serper' | 'tavily' | 'exa' | 'brave' | 'jina' | 'kagi' | 'you' | 'firecrawl' | 'tinyfish';
 
 export interface SearchOptions {
 	query: string;
 	maxResults?: number;
-	freshness?: Freshness;
 	engines?: EngineName[];
 	signal?: AbortSignal;
 }
 
-export interface EngineDef {
+interface EngineDef {
 	id: EngineName;
 	key: ProviderKey;
 	available(cfg: WebConfig): boolean;
@@ -79,20 +75,6 @@ async function request<T>(
 	}
 }
 
-const TBS: Record<Freshness, string> = {
-	none: '',
-	day: 'qdr:d',
-	week: 'qdr:w',
-	month: 'qdr:m',
-	year: 'qdr:y',
-};
-const BRAVE_FRESHNESS: Record<Exclude<Freshness, 'none'>, string> = {
-	day: 'pd',
-	week: 'pw',
-	month: 'pm',
-	year: 'py',
-};
-
 async function serper(key: string, opts: SearchOptions, signal?: AbortSignal): Promise<EngineOutcome> {
 	const t0 = Date.now();
 	try {
@@ -101,8 +83,6 @@ async function serper(key: string, opts: SearchOptions, signal?: AbortSignal): P
 			num: opts.maxResults ?? DEFAULT_MAX_RESULTS,
 			gl: 'us',
 		};
-		const tbs = TBS[opts.freshness ?? 'none'];
-		if (tbs) body.tbs = tbs;
 		const d = await postJson<{
 			organic?: { title?: string; link?: string; snippet?: string; date?: string }[];
 		}>('https://google.serper.dev/search', body, jsonHeaders({ 'X-API-KEY': key }), signal);
@@ -130,15 +110,7 @@ async function tavily(key: string, opts: SearchOptions, signal?: AbortSignal): P
 			search_depth: 'basic',
 			topic: 'general',
 		};
-		// Docs: auth = Authorization: Bearer header; param = time_range
-		// (body api_key and the legacy 'days' field are not in the reference).
-		const tr = (opts.freshness && opts.freshness !== 'none' ? opts.freshness : undefined) as
-			| 'day'
-			| 'week'
-			| 'month'
-			| 'year'
-			| undefined;
-		if (tr) body.time_range = tr;
+		// Docs: auth = Authorization: Bearer header
 		const d = await postJson<{
 			results?: { title?: string; url?: string; content?: string; published_date?: string }[];
 		}>('https://api.tavily.com/search', body, jsonHeaders({ Authorization: `Bearer ${key}` }), signal);
@@ -165,12 +137,6 @@ async function exa(key: string, opts: SearchOptions, signal?: AbortSignal): Prom
 			numResults: opts.maxResults ?? DEFAULT_MAX_RESULTS,
 			contents: { highlights: true },
 		};
-		// exa has no relative window param: filter via absolute ISO startPublishedDate
-		const f = opts.freshness && opts.freshness !== 'none' ? FRESHNESS_DAYS[opts.freshness] : undefined;
-		if (f !== undefined) {
-			const start = new Date(Date.now() - f * 86_400_000).toISOString();
-			body.startPublishedDate = start;
-		}
 		const d = await postJson<{
 			results?: { title?: string; url?: string; highlights?: string[]; publishedDate?: string }[];
 		}>('https://api.exa.ai/search', body, jsonHeaders({ 'x-api-key': key }), signal);
@@ -198,8 +164,6 @@ async function brave(key: string, opts: SearchOptions, signal?: AbortSignal): Pr
 		url.searchParams.set('extra_snippets', 'true');
 		url.searchParams.set('text_decorations', 'false');
 		url.searchParams.set('safesearch', 'moderate');
-		const f = opts.freshness && opts.freshness !== 'none' ? BRAVE_FRESHNESS[opts.freshness] : undefined;
-		if (f) url.searchParams.set('freshness', f);
 		const d = await getJson<{
 			web?: {
 				results?: { title?: string; url?: string; description?: string; extra_snippets?: string[]; age?: string }[];
@@ -292,8 +256,6 @@ async function you(key: string, opts: SearchOptions, signal?: AbortSignal): Prom
 			count: opts.maxResults ?? DEFAULT_MAX_RESULTS,
 			safesearch: 'moderate',
 		};
-		const tr = opts.freshness && opts.freshness !== 'none' ? opts.freshness : undefined;
-		if (tr) body.freshness = tr;
 		const d = await postJson<{
 			results?: {
 				web?: { url?: string; title?: string; description?: string; snippets?: string[]; page_age?: string }[];
@@ -329,8 +291,6 @@ async function firecrawl(key: string, opts: SearchOptions, signal?: AbortSignal)
 			limit: opts.maxResults ?? DEFAULT_MAX_RESULTS,
 			sources: ['web'],
 		};
-		const tbs = TBS[opts.freshness ?? 'none'];
-		if (tbs) body.tbs = tbs;
 		const headers: Record<string, string> = {
 			Accept: 'application/json',
 			'Content-Type': 'application/json',
@@ -377,7 +337,7 @@ async function tinyfish(key: string, opts: SearchOptions, signal?: AbortSignal):
 	}
 }
 
-export const ENGINE_REGISTRY: EngineDef[] = [
+const ENGINE_REGISTRY: EngineDef[] = [
 	{ id: 'serper', key: 'serperKey', available: (c) => !!c.serperKey, search: serper },
 	{ id: 'tavily', key: 'tavilyKey', available: (c) => !!c.tavilyKey, search: tavily },
 	{ id: 'exa', key: 'exaKey', available: (c) => !!c.exaKey, search: exa },
@@ -400,7 +360,7 @@ function parseEngineList(raw: string | undefined): EngineName[] | undefined {
 	return out.length ? out : undefined;
 }
 
-export function selectEngines(opts: SearchOptions): EngineDef[] {
+function selectEngines(opts: SearchOptions): EngineDef[] {
 	const cfg = getConfig();
 	const wanted = opts.engines ?? parseEngineList(cfg.searchEngines);
 	const selected = ENGINE_REGISTRY.filter((def) => {

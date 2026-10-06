@@ -80,7 +80,7 @@ export const PROVIDERS: ProviderInfo[] = SPECS.map((s) => ({
 	aliases: s.envNames.slice(1),
 }));
 
-export const SHELL_FILES: Record<string, string[]> = {
+const SHELL_FILES: Record<string, string[]> = {
 	zsh: ['.zshrc', '.zprofile'],
 	bash: ['.bashrc', '.bash_profile', '.profile'],
 	sh: ['.profile'],
@@ -170,8 +170,15 @@ export function resolveStoredValue(raw: string): string | undefined {
 }
 
 export function keyFilePath(): string {
-	const base = process.env.WSEARCH_CACHE_DIR ?? join(homedir(), '.pi', 'agent', 'wsearch');
-	return join(base, 'env');
+	return join(wsearchDir(), 'env');
+}
+
+export function disabledFlagPath(): string {
+	return join(wsearchDir(), 'off');
+}
+
+function wsearchDir(): string {
+	return process.env.WSEARCH_CACHE_DIR ?? join(homedir(), '.pi', 'agent', 'wsearch');
 }
 
 let cached: WebConfig | undefined;

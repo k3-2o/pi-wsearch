@@ -82,7 +82,7 @@ export function cacheKey(parts: string[]): string {
 /** Search results are NOT cached: exact-repeat reuse is rare; staleness risk is not worth it. */
 export const CACHE_TTL_HOURS = 24;
 
-export function defaultCacheDir(): string {
+function defaultCacheDir(): string {
 	return join(process.env.HOME ?? process.env.USERPROFILE ?? '.', '.pi', 'agent', 'wsearch');
 }
 
