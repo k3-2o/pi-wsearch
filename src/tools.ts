@@ -333,9 +333,10 @@ export function registerWebTools(pi: ExtensionAPI) {
 			return makeFetchResult(res, params);
 		},
 		renderResult(result, options, theme) {
-			const lines = resultText(result).split('\n');
+			const raw = italicizeIndices(resultText(result), theme);
+			const lines = raw.split('\n');
 			if (!options.expanded) return new Text(previewWithHint(lines, theme), 0, 0);
-			return new Text(colorizedResult(resultText(result), theme), 0, 0);
+			return new Text(colorizedResult(raw, theme), 0, 0);
 		},
 	});
 }
@@ -370,6 +371,14 @@ function fmtSize(chars: number): string {
 }
 
 const PREVIEW_LINES = 10;
+
+/** Display-only: the model-facing markers (`indices …`, `- *N*`) render as
+ * genuine ANSI italics in the TUI; the content text itself is untouched. */
+function italicizeIndices(text: string, theme: Theme): string {
+	return text
+		.replace(/^(indices - 0 - \d+ sections?)$/gm, (m) => theme.italic(m))
+		.replace(/^- \*(\d+)\* /gm, (_, n: string) => `- ${theme.italic(n)} `);
+}
 
 function colorizedResult(text: string, theme: Theme): string {
 	return text
@@ -421,7 +430,9 @@ function fetchErrorResult(details: FetchDetails): FetchResult {
 function buildFetchResult(res: Awaited<ReturnType<typeof scrape>>, sections: number[]): FetchResult {
 	const want = [...new Set(sections.map((i) => Math.max(0, Math.min(res.sections.length - 1, i))))];
 	const chosen = want.map((i) => res.sections[i]).filter(Boolean);
-	const body = res.outline.length ? res.outline.map((h) => `- ${h}`).join('\n') + '\n\n' : '';
+	const body = res.outline.length
+		? `indices - 0 - ${res.outline.length - 1} section${res.outline.length === 1 ? '' : 's'}\n${res.outline.map((h, i) => `- *${i}* ${h}`).join('\n')}\n\n`
+		: '';
 	const parts: string[] = [];
 	want.forEach((idx) => {
 		const s = res.sections[idx];

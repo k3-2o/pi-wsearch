@@ -713,6 +713,7 @@ async function archivedFetch(
 	maxChars: number,
 ): Promise<ScrapeResult | undefined> {
 	if (signal?.aborted) return undefined;
+	if (isPrivateHost(url.hostname)) return undefined;
 	try {
 		const { ctrl, done } = withTimeout('archive lookup', 10_000, signal);
 		let snapshotUrl: string | undefined;
