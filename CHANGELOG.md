@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.2 (2026-10-08)
+
+### Fetch
+
+- Outline renders as an indexed map: `indices - 0 - N sections` header with `- *N*` entries (slanted in the TUI); sections are addressed by these numbers.
+
+### Fixed
+
+- Private/loopback 404s skip the Wayback availability lookup: fail fast, no live call archive.org can never answer.
+
 ## 0.2.0 (2026-10-08)
 
 ### Search

@@ -1,6 +1,6 @@
 {
   "name": "pi-wsearch",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Pi extension: web.search + web.fetch",
   "license": "MIT",
   "type": "module",
