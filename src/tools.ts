@@ -6,8 +6,8 @@ import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from '@earendil-works/pi-coding-agent';
 import { keyHint } from '@earendil-works/pi-coding-agent';
 import { Text } from '@earendil-works/pi-tui';
-import { mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { appendFileSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import {
 	getConfig,
 	PROVIDERS,
@@ -15,13 +15,14 @@ import {
 	resetConfigCache,
 	keyOrigins,
 	disabledFlagPath,
+	wsearchDir,
 	type ProviderInfo,
 } from './config';
 import { ABORT_ERROR, DEFAULT_MAX_RESULTS } from './constants';
 import { cacheKey, openCache, CACHE_TTL_HOURS } from './cache';
-import { runEngines } from './engines';
+import { clearDeadEngines, runEngines } from './engines';
 import { fuse, diversifyByHost } from './fuse';
-import { normalizeUrl } from './urls';
+import { hostOf, normalizeUrl } from './urls';
 import { scrape } from './scrape';
 
 const SEARCH_PARAMS = Type.Object({
@@ -38,6 +39,7 @@ const SEARCH_PARAMS = Type.Object({
 const SEARCH_OUTPUT = Type.Object({
 	query: Type.String(),
 	engines_used: Type.Array(Type.String()),
+	engines_errored: Type.Optional(Type.Array(Type.Object({ engine: Type.String(), error: Type.String() }))),
 	results: Type.Array(
 		Type.Object({
 			url: Type.String(),
@@ -81,6 +83,57 @@ function fmtSnippet(s: string, max: number): string {
 	return t.length > max ? t.slice(0, max) + '…' : t;
 }
 
+const ABORT_ERROR_LOCAL = ABORT_ERROR;
+
+function dropRarestTerm(query: string): string {
+	const words = query.split(/\s+/).filter((w) => w.length > 2 && !/^(?:site|inurl|intitle|filetype):/i.test(w));
+	if (words.length < 2) return '';
+	const rarest = words.reduce((a, b) => (b.length > a.length ? b : a));
+	return query
+		.replace(rarest, ' ')
+		.replace(/\s{2,}/g, ' ')
+		.trim();
+}
+
+function stripSiteSuffix(title: string, host: string): string {
+	const m = /^(.{3,})\s+[|–—-]\s+([^|–—-]{2,40})$/.exec(title.trim());
+	if (!m) return title;
+	const suffix = m[2].trim();
+	const head = m[1].trim();
+	const hostBase = host.replace(/^www\./, '').split('.')[0];
+	if (host && (suffix.toLowerCase().includes(hostBase) || suffix.length <= 25)) return head;
+	return title;
+}
+
+function normalizeHitDate(raw: string | undefined): string | undefined {
+	if (!raw) return undefined;
+	const t = Date.parse(raw);
+	if (!Number.isNaN(t)) return new Date(t).toISOString().slice(0, 10);
+	const rel = /^(\d+)\s*(m|min|minute|minutes|h|hour|hours|d|day|days|w|week|weeks|mo|month|months)\b/i.exec(
+		raw.trim(),
+	);
+	if (rel) {
+		const n = parseInt(rel[1], 10);
+		const unit = rel[2].toLowerCase();
+		const ms =
+			unit.startsWith('m') && unit !== 'mo'
+				? 60_000
+				: unit.startsWith('h')
+					? 3_600_000
+					: unit.startsWith('d')
+						? 86_400_000
+						: unit.startsWith('w')
+							? 604_800_000
+							: unit.startsWith('mo')
+								? 2_592_000_000
+								: 604_800_000;
+		void ms;
+		return new Date(Date.now() - n * ms).toISOString().slice(0, 10);
+	}
+	if (/^yesterday$/i.test(raw.trim())) return new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+	return undefined;
+}
+
 function cleanSnippet(s: string): string {
 	return s
 		.replace(/\\([_*`[\]()#>~.-])/g, '$1')
@@ -94,6 +147,8 @@ function cleanSnippet(s: string): string {
 export function registerWebTools(pi: ExtensionAPI) {
 	const cache = openCache(getConfig().cacheDir + '/cache.json');
 	const exposure = existsSync(disabledFlagPath()) ? 'hidden' : 'direct';
+	const lastSearch = { urlRank: new Map<string, { rank: number; engines: string[]; query: string }>() };
+	const tracePath = join(wsearchDir(), 'fetchtrace.jsonl');
 
 	const namespace = {
 		name: 'web',
@@ -121,18 +176,47 @@ export function registerWebTools(pi: ExtensionAPI) {
 				maxResults: params.max_results ?? DEFAULT_MAX_RESULTS,
 				signal,
 			});
+			const errored = outcomes
+				.filter((o) => o.error && o.engine !== 'none')
+				.map((o) => ({ engine: o.engine, error: o.error! }));
 			// signal may have fired mid-round: still an abort, never a results payload
 			if (signal?.aborted) throw new Error(ABORT_ERROR);
-			const fused = fuse(outcomes, { query: params.query });
-			const candidates = diversifyByHost(
+			let fused = fuse(outcomes, { query: params.query });
+			let candidates = diversifyByHost(
 				fused.filter((r) => !r.junk),
 				2,
 			).slice(0, Math.max((params.max_results ?? DEFAULT_MAX_RESULTS) * 2, DEFAULT_MAX_RESULTS));
+			let retryNote = '';
+			if (!candidates.length && !signal?.aborted) {
+				const hasOps = /(?:^|\s)(?:site:|intitle:|inurl:|filetype:|-"|"[^"]+"|(?:^|\s)-\w+)/i.test(params.query);
+				const stripped = hasOps
+					? params.query
+							.replace(/(?:^|\s)(?:site:\S+|intitle:\S+|inurl:\S+|filetype:\S+)|"[^"]*"|(?:^|\s)-\w+/gi, ' ')
+							.replace(/\s{2,}/g, ' ')
+							.trim()
+					: '';
+				const relaxed = stripped && stripped !== params.query ? stripped : dropRarestTerm(params.query);
+				if (relaxed && relaxed !== params.query) {
+					const retryOutcomes = await runEngines({
+						query: relaxed,
+						maxResults: params.max_results ?? DEFAULT_MAX_RESULTS,
+						signal,
+					});
+					if (!signal?.aborted) {
+						fused = fuse(retryOutcomes, { query: relaxed });
+						candidates = diversifyByHost(
+							fused.filter((r) => !r.junk),
+							2,
+						).slice(0, Math.max((params.max_results ?? DEFAULT_MAX_RESULTS) * 2, DEFAULT_MAX_RESULTS));
+						if (candidates.length) retryNote = ` (retried as "${relaxed}" after zero results)`;
+					}
+				}
+			}
 			const visible = candidates.slice(0, params.max_results ?? DEFAULT_MAX_RESULTS);
 			const enginesUsed = [...new Set(fused.flatMap((r) => r.engines))];
 			const snip = 240;
 
-			let text = `${visible.length} result${visible.length === 1 ? '' : 's'} for "${params.query}": ${enginesUsed.length} engine${enginesUsed.length === 1 ? '' : 's'} contributed (${enginesUsed.join(', ')})\n\n`;
+			let text = `${visible.length} result${visible.length === 1 ? '' : 's'} for "${params.query}": ${enginesUsed.length} engine${enginesUsed.length === 1 ? '' : 's'} contributed (${enginesUsed.join(', ')})${retryNote}\n\n`;
 			if (!visible.length) {
 				const fatal = outcomes.find((o) => o.engine === 'none' && o.error);
 				text = fatal
@@ -140,13 +224,22 @@ export function registerWebTools(pi: ExtensionAPI) {
 					: `No results for "${params.query}". Broaden the query.\n`;
 			}
 			visible.forEach((r, i) => {
-				const title = fmtSnippet(cleanSnippet(r.title), 100) || r.url;
+				lastSearch.urlRank.set(normalizeUrl(r.url), {
+					rank: i + 1,
+					engines: r.engines,
+					query: params.query,
+				});
+				const title = fmtSnippet(stripSiteSuffix(cleanSnippet(r.title), hostOf(r.url)), 100) || r.url;
 				const snippet = fmtSnippet(cleanSnippet(r.snippet), snip);
 				const via = r.engines.length > 1 ? ` ← ${r.engines.length} engines agree` : ` ← ${r.engines[0]}`;
-				text += `${i + 1}. [${title}](${r.url})${via}\n`;
+				const when = normalizeHitDate(r.date);
+				text += `${i + 1}. [${title}](${r.url})${when ? ` — ${when}` : ''}${via}\n`;
 				if (snippet) text += `   ${snippet}\n`;
 				text += '\n';
 			});
+			if (errored.length) {
+				text += `⚠ engines: ${errored.map((e) => `${e.engine} (${e.error.slice(0, 80)})`).join('; ')}\n`;
+			}
 
 			return {
 				content: [{ type: 'text', text }],
@@ -154,6 +247,7 @@ export function registerWebTools(pi: ExtensionAPI) {
 				structuredContent: {
 					query: params.query,
 					engines_used: enginesUsed,
+					engines_errored: errored,
 					results: visible.map((r) => ({
 						url: r.url,
 						title: r.title,
@@ -194,13 +288,48 @@ export function registerWebTools(pi: ExtensionAPI) {
 		async execute(_id, params, signal) {
 			const cfg = getConfig();
 			const key = cacheKey(['fetch', 'v3', normalizeUrl(params.url)]);
+			const ranked = lastSearch.urlRank.get(normalizeUrl(params.url));
+			if (ranked && !cache.get(key)) {
+				try {
+					mkdirSync(dirname(tracePath), { recursive: true });
+					appendFileSync(
+						tracePath,
+						`${JSON.stringify({
+							ts: Date.now(),
+							q: ranked.query,
+							rank: ranked.rank,
+							engines: ranked.engines,
+							url: normalizeUrl(params.url),
+						})}\n`,
+						{ flag: 'a', mode: 0o600 },
+					);
+				} catch {}
+			}
 			const cached = cache.get(key) as Awaited<ReturnType<typeof scrape>> | undefined;
 			if (cached) return makeFetchResult(cached, params);
+			const stale = cache.peekStale(key) as { value: Awaited<ReturnType<typeof scrape>>; ageHours: number } | undefined;
 			const res = await scrape(params.url, {
 				allowPrivate: cfg.allowPrivate,
 				signal,
+				validators: stale?.value?.validators,
 			});
-			if (!res.error) cache.set(key, res, CACHE_TTL_HOURS * 3600_000);
+			if (res.error === 'not-modified' && stale?.value) {
+				cache.set(key, stale.value, CACHE_TTL_HOURS * 3600_000);
+				return makeFetchResult(stale.value, params);
+			}
+			if (!res.error) {
+				cache.set(key, res.validators ? { ...res, validators: res.validators } : res, CACHE_TTL_HOURS * 3600_000);
+				return makeFetchResult(res, params);
+			}
+			if (stale?.value && !stale.value.error) {
+				return makeFetchResult(
+					{
+						...stale.value,
+						title: `${stale.value.title} [STALE — ~${Math.round(stale.ageHours)}h old, live fetch failed]`,
+					},
+					params,
+				);
+			}
 			return makeFetchResult(res, params);
 		},
 		renderResult(result, options, theme) {
@@ -332,6 +461,8 @@ function buildFetchResult(res: Awaited<ReturnType<typeof scrape>>, sections: num
 		sections_requested: [...new Set(sections)],
 		sections_missing: [...new Set(missing)],
 		sections_truncated: truncatedCount,
+		...(res.publishedAt ? { publishedAt: res.publishedAt } : {}),
+		...(res.paywalled ? { paywalled: true } : {}),
 		...(res.error ? { error: res.error } : {}),
 	};
 	if (res.error) return fetchErrorResult(details);
@@ -412,6 +543,7 @@ async function handleLogin(ctx: ExtensionCommandContext, name?: string): Promise
 	}
 	writeKey(provider, trimmed);
 	resetConfigCache();
+	clearDeadEngines();
 	ctx.ui.notify(`${provider.id} ✓ saved to wsearch/env (${isCmd ? 'command' : 'key'})`, 'info');
 }
 
@@ -458,8 +590,11 @@ async function handleLogout(ctx: ExtensionCommandContext, name?: string): Promis
 	if (!ok) return;
 	removeKey(provider);
 	resetConfigCache();
+	clearDeadEngines();
 	ctx.ui.notify(`${provider.id} removed from wsearch/env`, 'info');
 }
+
+const SEARCH_TOOL_NAMES = ['web.search', 'web.fetch'] as const;
 
 function toggleSearchTools(pi: ExtensionAPI, disabled: boolean): void {
 	const flag = disabledFlagPath();
@@ -470,6 +605,12 @@ function toggleSearchTools(pi: ExtensionAPI, disabled: boolean): void {
 		rmSync(flag, { force: true });
 	}
 	registerWebTools(pi);
+	const active = new Set(pi.getActiveTools());
+	for (const name of SEARCH_TOOL_NAMES) {
+		if (disabled) active.delete(name);
+		else active.add(name);
+	}
+	pi.setActiveTools([...active]);
 }
 
 export function registerWebCommand(pi: ExtensionAPI) {

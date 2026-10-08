@@ -13,6 +13,12 @@ const JUNK_HOSTS = [
 	'twitch.tv',
 	'9gag.com',
 	'buzzfeed.com',
+	'twiscan.com',
+	'twstalker.com',
+	'unrollnow.com',
+	'threadreaderapp.com',
+	'nitter.net',
+	'upd.dev',
 ];
 const JUNK_TLDS = new Set(['xyz', 'top', 'loan', 'click', 'work', 'gq', 'icu', 'rest', 'cyou']);
 
@@ -53,7 +59,11 @@ export function normalizeUrl(raw: string): string {
 		const pairs = Array.from(u.searchParams.entries()).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 		const q = pairs.map(([k, v]) => `${k}=${v}`).join('&');
 		const port = u.port ? `:${u.port}` : '';
-		return `${u.protocol}//${host}${port}${u.pathname.replace(/\/+$/, '')}${q ? '?' + q : ''}`;
+		const path = u.pathname
+			.replace(/\/{2,}/g, '/')
+			.replace(/\/+$/, '')
+			.toLowerCase();
+		return `${u.protocol}//${host}${port}${path}${q ? '?' + q : ''}`;
 	} catch {
 		return raw.toLowerCase();
 	}
@@ -64,5 +74,14 @@ export function isJunk(raw: string): boolean {
 	if (JUNK_HOSTS.some((j) => host === j || host.endsWith('.' + j))) return true;
 	const tld = host.split('.').pop() ?? '';
 	if (JUNK_TLDS.has(tld)) return true;
+	if (/\/(?:status|thread)\/\d+(?:[/?#]|$)/i.test(pathOf(raw))) return true;
 	return false;
+}
+
+function pathOf(raw: string): string {
+	try {
+		return new URL(raw).pathname;
+	} catch {
+		return '';
+	}
 }

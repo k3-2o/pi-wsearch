@@ -1,6 +1,6 @@
 {
   "name": "pi-wsearch",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi extension: web.search + web.fetch",
   "license": "MIT",
   "type": "module",
@@ -59,5 +59,16 @@
     "oxlint": "^1.86.0",
     "typescript": "^7.0.2"
   },
-  "dependencies": {}
+  "dependencies": {},
+  "main": "index.ts",
+  "files": [
+    "index.ts",
+    "src/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }

@@ -28,11 +28,6 @@ export class TtlCache {
 			const raw = JSON.parse(readFileSync(this.file, 'utf8'));
 			if (raw && typeof raw === 'object' && typeof raw.entries === 'object') {
 				this.store = raw;
-				const now = Date.now();
-				// purge expired entries AND their order slots: dead keys must not grow across restarts
-				for (const k of Object.keys(this.store.entries)) {
-					if ((this.store.entries[k]?.exp ?? 0) <= now) delete this.store.entries[k];
-				}
 				this.store.order = this.store.order.filter((k) => this.store.entries[k] !== undefined);
 			}
 		} catch {
@@ -51,16 +46,20 @@ export class TtlCache {
 	}
 	get(key: string): unknown | undefined {
 		const e = this.store.entries[key];
-		if (!e) return undefined;
-		if (e.exp < Date.now()) {
-			delete this.store.entries[key];
-			this.store.order = this.store.order.filter((k) => k !== key);
-			return undefined;
-		}
+		if (!e || e.exp < Date.now()) return undefined;
 		const i = this.store.order.indexOf(key);
 		if (i >= 0) this.store.order.splice(i, 1);
 		this.store.order.push(key);
 		return e.value;
+	}
+
+	/** Expired copy WITHOUT deleting it (stale-if-error reserve). */
+	peekStale(key: string): { value: unknown; ageHours: number } | undefined {
+		const e = this.store.entries[key];
+		if (!e) return undefined;
+		const ageHours = (Date.now() - e.exp) / 3600_000;
+		if (ageHours <= 0) return undefined;
+		return { value: e.value, ageHours };
 	}
 	set(key: string, value: unknown, ttlMs: number) {
 		this.store.entries[key] = { exp: Date.now() + ttlMs, value };

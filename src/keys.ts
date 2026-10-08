@@ -83,7 +83,9 @@ export function statusText(): string {
 		armed.length ? `  armed:   ${armed.map((id) => `${id} ✓(${origins[id] ?? '?'})`).join(', ')}` : '  armed:   (none)',
 	);
 	lines.push(`  dormant: ${dormant.length ? dormant.join(', ') : '(none)'}`);
-	const chain = cfg.fetchChain ? cfg.fetchChain.replace(/,/g, ', ') : 'firecrawl, tavily, exa, jina';
+	const chain = cfg.fetchChain
+		? cfg.fetchChain.replace(/,/g, ', ')
+		: 'jina, tinyfish, firecrawl, tavily, exa, serper, you, kagi';
 	lines.push(`  fetch:   local → ${chain}`);
 	const knobs = [];
 	if (cfg.searchEngines) knobs.push(`WSEARCH_ENGINES=${cfg.searchEngines}`);
@@ -97,6 +99,7 @@ export function statusText(): string {
 		lines.push('     · exa       → exa.ai        (1,000 free/mo)');
 		lines.push('     · firecrawl → firecrawl.dev (1,000 free credits/mo)');
 		lines.push('     · tinyfish  → tinyfish.ai   (free at any balance)');
+		lines.push('     · jina      → jina.ai       (free tier, search + reader)');
 		lines.push('  2. /websearch login, saved to wsearch/env');
 		lines.push('  3. run /websearch again; it should appear under "armed"');
 	}

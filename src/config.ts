@@ -181,6 +181,8 @@ function wsearchDir(): string {
 	return process.env.WSEARCH_CACHE_DIR ?? join(homedir(), '.pi', 'agent', 'wsearch');
 }
 
+export { wsearchDir };
+
 let cached: WebConfig | undefined;
 let origins: Record<string, 'env' | 'wsearch' | 'shell'> = {};
 export function resetConfigCache(): void {

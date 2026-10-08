@@ -148,6 +148,36 @@ function exactMatchBoost(hit: { title: string; snippet: string }, query: string 
 	return 0.3 * Math.min(1, matched / terms.length);
 }
 
+function bm25Score(hit: { title: string; snippet: string }, terms: string[]): number {
+	if (!terms.length) return 0;
+	const title = hit.title.toLowerCase();
+	const snip = hit.snippet.toLowerCase();
+	let score = 0;
+	for (const t of terms) {
+		const tfTitle = countTerm(t, title);
+		const tfSnip = countTerm(t, snip);
+		if (!tfTitle && !tfSnip) continue;
+		const idf = 1 + Math.min(1, 12 / Math.max(t.length, 1));
+		const saturate = (tf: number) => (tf * 2.2) / (tf + 1.2);
+		score += idf * (2 * saturate(tfTitle) + saturate(tfSnip));
+	}
+	return score;
+}
+
+function countTerm(term: string, text: string): number {
+	let n = 0;
+	let i = 0;
+	for (;;) {
+		const m = text.indexOf(term, i);
+		if (m < 0) break;
+		const before = m === 0 ? ' ' : text[m - 1];
+		const after = m + term.length >= text.length ? ' ' : text[m + term.length];
+		if (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) n++;
+		i = m + term.length;
+	}
+	return n;
+}
+
 function normTitle(s: string): string {
 	return s
 		.toLowerCase()
@@ -188,6 +218,7 @@ function collapseNearDuplicates(fused: FusedHit[]): FusedHit[] {
 
 export function fuse(outcomes: EngineOutcome[], opts: FuseOptions = {}): FusedHit[] {
 	const { query } = opts;
+	const terms = query ? queryTerms(query) : [];
 	const rank: Record<string, { hit: SearchHit; ranks: { engine: string; rank: number }[] }> = {};
 	let answering = 0;
 	for (const oc of outcomes) {
@@ -212,6 +243,8 @@ export function fuse(outcomes: EngineOutcome[], opts: FuseOptions = {}): FusedHi
 		const consensus = answering > 0 ? ranks.length / answering : 0;
 		let score = rrf + CONSENSUS_TIEBREAK * consensus;
 		score *= 1 + exactMatchBoost(hit, query);
+		const bm25 = bm25Score(hit, terms);
+		if (bm25 > 0) score *= 1 + Math.min(0.25, 0.045 * bm25);
 		if (hit.snippet.trim().length < 30) score *= 0.92;
 		if (junk) score *= 0.25;
 		fused.push({

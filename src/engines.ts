@@ -75,6 +75,18 @@ async function request<T>(
 	}
 }
 
+function extractSiteOperator(query: string): { query: string; domain?: string } {
+	const m = /(?:^|\s)site:([a-z0-9.-]+[a-z0-9])(?:\s|$)/i.exec(query);
+	if (!m) return { query };
+	return {
+		query: query
+			.replace(m[0], ' ')
+			.replace(/\s{2,}/g, ' ')
+			.trim(),
+		domain: m[1].toLowerCase(),
+	};
+}
+
 async function serper(key: string, opts: SearchOptions, signal?: AbortSignal): Promise<EngineOutcome> {
 	const t0 = Date.now();
 	try {
@@ -104,12 +116,14 @@ async function serper(key: string, opts: SearchOptions, signal?: AbortSignal): P
 async function tavily(key: string, opts: SearchOptions, signal?: AbortSignal): Promise<EngineOutcome> {
 	const t0 = Date.now();
 	try {
+		const { query, domain } = extractSiteOperator(opts.query);
 		const body: Record<string, unknown> = {
-			query: opts.query,
+			query,
 			max_results: opts.maxResults ?? DEFAULT_MAX_RESULTS,
 			search_depth: 'basic',
 			topic: 'general',
 		};
+		if (domain) body.include_domains = [domain];
 		// Docs: auth = Authorization: Bearer header
 		const d = await postJson<{
 			results?: { title?: string; url?: string; content?: string; published_date?: string }[];
@@ -132,11 +146,13 @@ async function tavily(key: string, opts: SearchOptions, signal?: AbortSignal): P
 async function exa(key: string, opts: SearchOptions, signal?: AbortSignal): Promise<EngineOutcome> {
 	const t0 = Date.now();
 	try {
+		const { query, domain } = extractSiteOperator(opts.query);
 		const body: Record<string, unknown> = {
-			query: opts.query,
+			query,
 			numResults: opts.maxResults ?? DEFAULT_MAX_RESULTS,
 			contents: { highlights: true },
 		};
+		if (domain) body.includeDomains = [domain];
 		const d = await postJson<{
 			results?: { title?: string; url?: string; highlights?: string[]; publishedDate?: string }[];
 		}>('https://api.exa.ai/search', body, jsonHeaders({ 'x-api-key': key }), signal);
@@ -360,6 +376,13 @@ function parseEngineList(raw: string | undefined): EngineName[] | undefined {
 	return out.length ? out : undefined;
 }
 
+const deadEngines = new Set<string>();
+const STABLE_ENGINE_ERROR = /HTTP 40[123]/;
+
+export function clearDeadEngines(): void {
+	deadEngines.clear();
+}
+
 function selectEngines(opts: SearchOptions): EngineDef[] {
 	const cfg = getConfig();
 	const wanted = opts.engines ?? parseEngineList(cfg.searchEngines);
@@ -372,7 +395,7 @@ function selectEngines(opts: SearchOptions): EngineDef[] {
 
 export async function runEngines(opts: SearchOptions): Promise<EngineOutcome[]> {
 	const cfg = getConfig();
-	const chosen = selectEngines(opts);
+	const chosen = selectEngines(opts).filter((def) => !deadEngines.has(def.id));
 	if (chosen.length === 0) {
 		const wanted = opts.engines ?? parseEngineList(getConfig().searchEngines);
 		const error = wanted?.length
@@ -380,5 +403,11 @@ export async function runEngines(opts: SearchOptions): Promise<EngineOutcome[]> 
 			: 'no search engine keys configured; run /websearch to add one';
 		return [{ engine: 'none', hits: [], error, latencyMs: 0 }];
 	}
-	return Promise.all(chosen.map((def) => def.search(cfg[def.key] as string, opts, opts.signal)));
+	return Promise.all(
+		chosen.map(async (def) => {
+			const outcome = await def.search(cfg[def.key] as string, opts, opts.signal);
+			if (outcome.error && STABLE_ENGINE_ERROR.test(outcome.error)) deadEngines.add(def.id);
+			return outcome;
+		}),
+	);
 }

@@ -29,7 +29,7 @@ import { validateToolArguments } from '@earendil-works/pi-ai';
 import { cacheKey, openCache } from '../src/cache';
 import { postJson, runEngines } from '../src/engines';
 import { fuse, diversifyByHost, type FusedHit } from '../src/fuse';
-import { normalizeUrl } from '../src/urls';
+import { isJunk, normalizeUrl } from '../src/urls';
 import {
 	decodeHtmlEntities,
 	extractHtml,
@@ -75,12 +75,14 @@ beforeAll(async () => {
 			// 12 sections x ~3KB each: exceeds the composed 12KB cap, so the
 			// joined text must be marked truncated (never silently cut)
 			let html = '<!doctype html><html><head><title>Big</title></head><body>';
-			for (let i = 0; i < 12; i++) html += `<h2>Section ${i}</h2><p>${'w'.repeat(3000)}</p>`;
+			for (let i = 0; i < 12; i++)
+				html += `<h2>Section ${i}</h2><p>${Array.from({ length: 60 }, (_, j) => `word${i}_${j} `.repeat(10)).join('')}</p>`;
 			html += '</body></html>';
 			res.setHeader('content-type', 'text/html');
 			res.end(html);
 		} else {
 			res.statusCode = 404;
+			res.setHeader('content-type', 'text/html');
 			res.end('not found');
 		}
 	});
@@ -397,6 +399,21 @@ const mkHit = (url: string, engine: string, title = url, snippet = 's'): FusedHi
 });
 
 describe('fuse', () => {
+	test('isJunk: mirror laundries die with their primaries; legit paths pass', () => {
+		expect(isJunk('https://x.com/badlogicgames/status/123')).toBe(true);
+		expect(isJunk('https://twiscan.com/en/x/badlogicgames/123')).toBe(true);
+		expect(isJunk('https://twstalker.com/badlogicgames')).toBe(true);
+		expect(isJunk('https://unrollnow.com/status/2106650925721100477')).toBe(true);
+		expect(isJunk('https://threadreaderapp.com/thread/2106650925721100477.html')).toBe(true);
+		expect(isJunk('https://nitter.net/badlogicgames/status/123')).toBe(true);
+		expect(isJunk('https://twsn-mirror.example/status/123456789')).toBe(true);
+		expect(isJunk('https://news.ycombinator.com/item?id=49925969')).toBe(false);
+		expect(isJunk('https://github.com/earendil-works/pi/issues/1')).toBe(false);
+		expect(isJunk('https://earendil.com/posts/pi-durable/')).toBe(false);
+		expect(isJunk('https://downdetector.com/status/github')).toBe(false);
+		expect(isJunk('https://arxiv.org/abs/2401.15884')).toBe(false);
+		expect(isJunk('https://medium.com/@user/status-updates-are-not-numbers')).toBe(false);
+	});
 	test('dedupes normalized URLs across engines and merges engine lists', () => {
 		const outcomes = [
 			{
@@ -580,18 +597,21 @@ describe('cache', () => {
 		expect(c.get(k2)).toBeUndefined();
 		rmSync(dir, { recursive: true, force: true });
 	});
-	test('expired entries are purged on reload, not carried across restarts', async () => {
+	test('expired entries survive reload as stale-if-error reserve, get() never serves them', async () => {
 		const dir = mkdtempSync(join(tmpdir(), 'wsearch-purge-'));
 		const path = join(dir, 'c.json');
 		const stale = cacheKey(['stale']);
 		const c = openCache(path);
 		c.set(stale, { v: 1 }, -1_000);
 		c.set(cacheKey(['fresh']), { v: 2 }, 60_000); // persists BOTH (stale still in store)
-		const c2 = openCache(path); // load() must purge the expired entry in memory
-		c2.set(cacheKey(['fresh2']), { v: 3 }, 60_000); // persists the purged store
+		const c2 = openCache(path); // load() keeps the expired entry as reserve
+		expect(c2.get(stale)).toBeUndefined(); // get() never serves expired copies
+		const reserve = c2.peekStale(stale);
+		expect(reserve).toBeDefined(); // but peekStale exposes it for stale-if-error
+		expect((reserve!.value as { v: number }).v).toBe(1);
+		c2.set(cacheKey(['fresh2']), { v: 3 }, 60_000); // persists (reserve rides along)
 		const raw = JSON.parse(await Bun.file(path).text()) as { entries: Record<string, unknown> };
-		expect(Object.keys(raw.entries)).not.toContain(stale);
-		expect(c2.get(stale)).toBeUndefined();
+		expect(Object.keys(raw.entries)).toContain(stale);
 		rmSync(dir, { recursive: true, force: true });
 	});
 });
@@ -906,6 +926,32 @@ describe('scrape', () => {
 		const auto = await scrape(`http://127.0.0.1:${port()}/thin`, { allowPrivate, render: 'auto' });
 		expect(auto.error).toBeDefined();
 	}, 90000);
+
+	test('auto: permanent local failure (404) fails fast and never enters the reader chain', async () => {
+		let chainCalls = 0;
+		const spy = {
+			available: () => true,
+			read: async () => {
+				chainCalls++;
+				throw new Error('reader chain must not be reached');
+			},
+		};
+		const restore = [
+			stubReader('firecrawl', spy),
+			stubReader('tavily', spy),
+			stubReader('exa', spy),
+			stubReader('jina', spy),
+		];
+		try {
+			const t0 = Date.now();
+			const res = await scrape(`http://127.0.0.1:${port()}/gone`, { allowPrivate, render: 'auto' });
+			expect(res.error).toMatch(/404/);
+			expect(chainCalls).toBe(0);
+			expect(Date.now() - t0).toBeLessThan(5000);
+		} finally {
+			restore.forEach((r) => r());
+		}
+	}, 30000);
 
 	// ---- bonded fetch schema: sections is the only address ------------------
 	test('FETCH_PARAMS accepts section reads and rejects everything else', () => {
