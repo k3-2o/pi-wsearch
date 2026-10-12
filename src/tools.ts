@@ -83,8 +83,6 @@ function fmtSnippet(s: string, max: number): string {
 	return t.length > max ? t.slice(0, max) + '…' : t;
 }
 
-const ABORT_ERROR_LOCAL = ABORT_ERROR;
-
 function dropRarestTerm(query: string): string {
 	const words = query.split(/\s+/).filter((w) => w.length > 2 && !/^(?:site|inurl|intitle|filetype):/i.test(w));
 	if (words.length < 2) return '';
@@ -115,19 +113,18 @@ function normalizeHitDate(raw: string | undefined): string | undefined {
 	if (rel) {
 		const n = parseInt(rel[1], 10);
 		const unit = rel[2].toLowerCase();
-		const ms =
-			unit.startsWith('m') && unit !== 'mo'
-				? 60_000
-				: unit.startsWith('h')
-					? 3_600_000
+		// 'mo' must win over 'm' BEFORE the minutes branch: the regex captures
+		// 'months' verbatim, so a bare startsWith('m') misclassifies it ("3
+		// months ago" used to render as ~today). Divide by unit, in months>…>ms.
+		const ms = unit.startsWith('h')
+			? 3_600_000
+			: unit.startsWith('mo')
+				? 2_592_000_000
+				: unit.startsWith('m')
+					? 60_000
 					: unit.startsWith('d')
 						? 86_400_000
-						: unit.startsWith('w')
-							? 604_800_000
-							: unit.startsWith('mo')
-								? 2_592_000_000
-								: 604_800_000;
-		void ms;
+						: 604_800_000;
 		return new Date(Date.now() - n * ms).toISOString().slice(0, 10);
 	}
 	if (/^yesterday$/i.test(raw.trim())) return new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
@@ -286,6 +283,9 @@ export function registerWebTools(pi: ExtensionAPI) {
 		},
 
 		async execute(_id, params, signal) {
+			// Abort = throw: a stale signal must never START a fetch, and an abort
+			// mid-flight must never be masked by the stale-if-error reserve below.
+			if (signal?.aborted) throw new Error(ABORT_ERROR);
 			const cfg = getConfig();
 			const key = cacheKey(['fetch', 'v3', normalizeUrl(params.url)]);
 			const ranked = lastSearch.urlRank.get(normalizeUrl(params.url));
@@ -313,6 +313,7 @@ export function registerWebTools(pi: ExtensionAPI) {
 				signal,
 				validators: stale?.value?.validators,
 			});
+			if (signal?.aborted) throw new Error(ABORT_ERROR); // mid-flight abort: never a payload, never stale
 			if (res.error === 'not-modified' && stale?.value) {
 				cache.set(key, stale.value, CACHE_TTL_HOURS * 3600_000);
 				return makeFetchResult(stale.value, params);
@@ -364,10 +365,6 @@ interface FetchResult {
 	details: FetchDetails;
 	structuredContent: JsonValue;
 	isError?: boolean;
-}
-
-function fmtSize(chars: number): string {
-	return chars >= 1024 ? `${(chars / 1024).toFixed(1)} KB` : `${chars} chars`;
 }
 
 const PREVIEW_LINES = 10;

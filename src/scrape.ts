@@ -5,6 +5,7 @@
  */
 import { getConfig, sanitizeError } from './config';
 import { ABORT_ERROR } from './constants';
+import { isPrivateHost, validateUrl } from './urls';
 import {
 	localFetch,
 	looksLikeHtml,
@@ -32,6 +33,8 @@ export interface ScrapeResult {
 	validators?: { etag?: string; lastModified?: string };
 	error?: string;
 }
+
+export { isPrivateHost, validateUrl } from './urls'; // public surface unchanged; the gates live in the URL leaf
 
 const DEFAULT_MAX_CHARS = 12000;
 
@@ -89,66 +92,6 @@ export function decodeHtmlEntities(s: string): string {
 		}
 		return NAMED_ENTITIES[body.toLowerCase()] ?? m;
 	});
-}
-
-function isPrivateIpv4(h: string): boolean {
-	const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
-	if (!ipv4) return false;
-	const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
-	if (a === 10) return true;
-	if (a === 127) return true;
-	if (a === 0) return true;
-	if (a === 169 && b === 254) return true;
-	if (a === 172 && b >= 16 && b <= 31) return true;
-	if (a === 192 && b === 168) return true;
-	return false;
-}
-
-function numericIpv4(h: string): string | null {
-	if (!/^[0-9.]+$/.test(h) && !/^0[xX][0-9a-fA-F.]+$/.test(h)) return null;
-	const fields = h.split('.');
-	if (fields.length > 4) return null;
-	const parts: number[] = [];
-	for (const f of fields) {
-		if (/^0[xX][0-9a-fA-F]+$/.test(f)) parts.push(parseInt(f, 16));
-		else if (/^0[0-7]+$/.test(f)) parts.push(parseInt(f, 8));
-		else if (/^\d+$/.test(f)) parts.push(Number(f));
-		else return null;
-	}
-	const last = parts[parts.length - 1];
-	if (parts.length === 1) {
-		if (last >= 2 ** 32) return null;
-		return [(last >>> 24) & 0xff, (last >>> 16) & 0xff, (last >>> 8) & 0xff, last & 0xff].join('.');
-	}
-	if (parts.slice(0, -1).some((n) => n > 255)) return null;
-	if (last >= 2 ** (8 * (4 - parts.length + 1))) return null;
-	if (parts.length === 2) return [parts[0], 0, 0, last].join('.');
-	if (parts.length === 3) return [parts[0], parts[1], (last >>> 8) & 0xff, last & 0xff].join('.');
-	return parts.join('.');
-}
-
-export function isPrivateHost(host: string): boolean {
-	const h = host.toLowerCase().replace(/^\[(.*)\]$/, '$1');
-	if (h === 'localhost' || h.endsWith('.local') || h.endsWith('.localhost')) return true;
-	const mapped = /:ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(h);
-	if (mapped) {
-		const [a, b] = [parseInt(mapped[1], 16), parseInt(mapped[2], 16)];
-		if (isPrivateIpv4(`${(a >> 8) & 0xff}.${a & 0xff}.${(b >> 8) & 0xff}.${b & 0xff}`)) return true;
-	}
-	const ipv4 = numericIpv4(h);
-	if (ipv4 && isPrivateIpv4(ipv4)) return true;
-	if (/^[0-9a-f:]+$/.test(h) && h.includes(':')) {
-		if (h.startsWith('::1') || h === '0:0:0:0:0:0:0:1') return true;
-		if (h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd')) return true;
-	}
-	return false;
-}
-
-export function validateUrl(raw: string, allowPrivate = false): URL {
-	const u = new URL(raw);
-	if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error(`unsupported protocol: ${u.protocol}`);
-	if (!allowPrivate && isPrivateHost(u.hostname)) throw new Error('private/loopback address rejected');
-	return u;
 }
 
 function stripKatexSpans(h: string): string {
@@ -468,8 +411,7 @@ export function sliceSections(
 					const depth = hm![1].length;
 					if (cur.trim()) sections.push(cur.trim());
 					cur = `${'#'.repeat(depth)} ${name}\n`;
-					if (outlineNames.length < OUTLINE_CAP && depth <= 4)
-						outlineNames.push(name.replace(/\s+/g, ' ').slice(0, 90));
+					if (outlineNames.length < OUTLINE_CAP) outlineNames.push(name.replace(/\s+/g, ' ').slice(0, 90));
 					continue;
 				}
 				seenParas.add(paraKey);
@@ -486,7 +428,7 @@ export function sliceSections(
 			const depth = hm[1].length;
 			const rest = (hm[3] ?? '').replace(/^[\n\s]+/, '');
 			cur = `${'#'.repeat(depth)} ${name}` + (rest ? `\n${rest}` : '') + '\n';
-			if (outlineNames.length < OUTLINE_CAP && depth <= 4) outlineNames.push(name.replace(/\s+/g, ' ').slice(0, 90));
+			if (outlineNames.length < OUTLINE_CAP) outlineNames.push(name.replace(/\s+/g, ' ').slice(0, 90));
 			continue;
 		}
 		cur += scrubNavBullets(b) + '\n\n';
@@ -714,25 +656,26 @@ async function archivedFetch(
 ): Promise<ScrapeResult | undefined> {
 	if (signal?.aborted) return undefined;
 	if (isPrivateHost(url.hostname)) return undefined;
+	let snapshotUrl: string | undefined;
+	let snapTs: string | undefined;
+	const { ctrl, done } = withTimeout('archive lookup', 10_000, signal);
 	try {
-		const { ctrl, done } = withTimeout('archive lookup', 10_000, signal);
-		let snapshotUrl: string | undefined;
-		try {
-			const res = await fetch(`https://archive.org/wayback/available?url=${encodeURIComponent(url.toString())}`, {
-				signal: ctrl.signal,
-				headers: { Accept: 'application/json' },
-			});
-			if (res.ok) {
-				const d = (await res.json()) as {
-					archived_snapshots?: { closest?: { url?: string; status?: string; timestamp?: string } };
-				};
-				const snap = d.archived_snapshots?.closest;
-				if (snap?.url && snap.status === '200') snapshotUrl = snap.url;
-				var snapTs = snap?.timestamp;
-			}
-		} finally {
-			done();
+		const res = await fetch(`https://archive.org/wayback/available?url=${encodeURIComponent(url.toString())}`, {
+			signal: ctrl.signal,
+			headers: { Accept: 'application/json' },
+		});
+		if (res.ok) {
+			const d = (await res.json()) as {
+				archived_snapshots?: { closest?: { url?: string; status?: string; timestamp?: string } };
+			};
+			const snap = d.archived_snapshots?.closest;
+			if (snap?.url && snap.status === '200') snapshotUrl = snap.url;
+			snapTs = snap?.timestamp;
 		}
+	} finally {
+		done();
+	}
+	try {
 		if (!snapshotUrl || signal?.aborted) return undefined;
 		const { body, contentType } = await localFetch(new URL(snapshotUrl), signal);
 		if (!/html|text/.test(contentType)) return undefined;

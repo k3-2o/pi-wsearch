@@ -1,9 +1,12 @@
 /**
  * Transport for web.fetch: UA-rotating local HTTP + the key-gated reader
- * backends. Text processing lives in scrape.ts (one-way import).
+ * backends. Text processing lives in scrape.ts (one-way import). SSRF: every
+ * redirect hop is re-validated against the private/loopback gates on the
+ * local path (see urls.isPrivateHost for the deliberate scope).
  */
 import { getConfig, sanitizeError } from './config';
 import { ABORT_ERROR } from './constants';
+import { isPrivateHost } from './urls';
 
 export type Renderer = 'local' | 'firecrawl' | 'tavily' | 'exa' | 'jina' | 'kagi' | 'tinyfish' | 'serper' | 'you';
 
@@ -24,6 +27,7 @@ const USER_AGENTS = [
 const MAX_HTML_BYTES = 5 * 1024 * 1024;
 const LOCAL_TIMEOUT_MS = 15_000;
 const RETRY_AFTER_MAX_MS = 10_000;
+const MAX_REDIRECTS = 8;
 const READER_TIMEOUTS: Record<RemoteRenderer, number> = {
 	firecrawl: 45_000,
 	tavily: 30_000,
@@ -241,24 +245,44 @@ export async function localFetch(
 		if (signal?.aborted) throw new Error(ABORT_ERROR);
 		const { ctrl, done } = withTimeout('local fetch', LOCAL_TIMEOUT_MS, signal);
 		try {
+			const headers: Record<string, string> = {
+				'User-Agent': USER_AGENTS[attempt],
+				Accept: 'text/markdown,text/html,application/xhtml+xml,text/plain;q=0.8,*/*;q=0.5',
+				'Accept-Language': 'en-US,en;q=0.5',
+			};
 			const condHeaders: Record<string, string> = {};
 			if (validators?.etag) condHeaders['If-None-Match'] = validators.etag;
 			if (validators?.lastModified) condHeaders['If-Modified-Since'] = validators.lastModified;
-			const res = await fetch(url, {
-				headers: {
-					'User-Agent': USER_AGENTS[attempt],
-					Accept: 'text/markdown,text/html,application/xhtml+xml,text/plain;q=0.8,*/*;q=0.5',
-					'Accept-Language': 'en-US,en;q=0.5',
-					...condHeaders,
-				},
-				redirect: 'follow',
-				signal: ctrl.signal,
-			});
-			if (res.status === 304 && attempt === 0) {
+			// 'manual' + explicit per-hop re-validation: a hostile page must never
+			// aim the agent at its own machine via a Location header. Conditional
+			// headers describe the FIRST resource only, so they drop after hop 0.
+			let current = url;
+			let res: Response | undefined;
+			for (let hop = 0; ; hop++) {
+				if (signal?.aborted) throw new Error(ABORT_ERROR);
+				res = await fetch(current, {
+					redirect: 'manual',
+					headers: hop === 0 ? { ...headers, ...condHeaders } : headers,
+					signal: ctrl.signal,
+				});
+				if (!isRedirect(res.status)) break;
+				if (hop >= MAX_REDIRECTS) throw new Error(`too many redirects (HTTP ${res.status})`);
+				const loc = res.headers.get('location');
+				await res.body?.cancel().catch(() => {});
+				if (!loc) throw new Error(`redirect without Location (HTTP ${res.status})`);
+				const next = new URL(loc, current);
+				if (next.protocol !== 'http:' && next.protocol !== 'https:') {
+					throw new Error(`unsupported redirect protocol: ${next.protocol}`);
+				}
+				if (isPrivateHost(next.hostname)) throw new Error('private/loopback address rejected (redirect)');
+				current = next;
+			}
+			const final = res!;
+			if (final.status === 304 && attempt === 0) {
 				done();
 				return { body: '', contentType: '', validators: validators ?? {}, notModified: true };
 			}
-			const ct = res.headers.get('content-type') ?? '';
+			const ct = final.headers.get('content-type') ?? '';
 			const mime = ct.split(';')[0]?.trim().toLowerCase() ?? '';
 			if (
 				!/html|xml|text/.test(mime) &&
@@ -267,25 +291,25 @@ export async function localFetch(
 			) {
 				throw new Error(`not a readable page (${mime || '?'})`);
 			}
-			if (res.status === 429 && !retried429) {
+			if (final.status === 429 && !retried429) {
 				retried429 = true;
-				await waitAbortable(parseRetryAfter(res.headers.get('retry-after')), signal);
+				await waitAbortable(parseRetryAfter(final.headers.get('retry-after')), signal);
 				attempt--;
 				continue;
 			}
-			if (!res.ok) {
-				const sample = await res.text().catch(() => '');
-				if (isBotBlocked(res.status, sample) && attempt < USER_AGENTS.length - 1) continue;
-				throw new Error(`HTTP ${res.status}`);
+			if (!final.ok) {
+				const sample = await final.text().catch(() => '');
+				if (isBotBlocked(final.status, sample) && attempt < USER_AGENTS.length - 1) continue;
+				throw new Error(`HTTP ${final.status}`);
 			}
-			const bytes = await readBodyBounded(res, MAX_HTML_BYTES);
+			const bytes = await readBodyBounded(final, MAX_HTML_BYTES);
 			if (bytes.byteLength === 0) throw new Error('empty body');
 			return {
 				body: decodeBody(bytes, ct),
 				contentType: ct,
 				validators: {
-					etag: res.headers.get('etag') ?? undefined,
-					lastModified: res.headers.get('last-modified') ?? undefined,
+					etag: final.headers.get('etag') ?? undefined,
+					lastModified: final.headers.get('last-modified') ?? undefined,
 				},
 				notModified: false,
 			};
@@ -304,6 +328,11 @@ export async function localFetch(
 		}
 	}
 	throw new Error('local fetch failed');
+}
+
+// 3xx redirect statuses; manual following must not treat these as content.
+function isRedirect(status: number): boolean {
+	return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
 
 // Per-attempt timeout + pre-abort: an already-aborted signal never fires

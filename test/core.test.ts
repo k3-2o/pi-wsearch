@@ -80,6 +80,17 @@ beforeAll(async () => {
 			html += '</body></html>';
 			res.setHeader('content-type', 'text/html');
 			res.end(html);
+		} else if (u.pathname === '/redirect-internal') {
+			// hostile redirect: aims the client at its own loopback. The SSRF gate
+			// must reject the HOP (never serve the internal body).
+			res.statusCode = 302;
+			res.setHeader('location', `http://127.0.0.1:${port()}/docs`);
+			res.end();
+		} else if (u.pathname === '/redirect-loop') {
+			// self-redirect: the manual follow must cap out, not loop forever
+			res.statusCode = 302;
+			res.setHeader('location', `/redirect-loop`);
+			res.end();
 		} else {
 			res.statusCode = 404;
 			res.setHeader('content-type', 'text/html');
@@ -318,7 +329,6 @@ describe('abort (cooperative signals)', () => {
 		// no real network is touched, and count rejects to prove no paid reader
 		// ran to completion.
 		let rejected = 0;
-		let completed = false;
 		const hanging = {
 			available: () => true,
 			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- signal drives the reject
@@ -349,8 +359,7 @@ describe('abort (cooperative signals)', () => {
 			expect(res.error).toMatch(/abort/i);
 			expect(res.error).not.toMatch(/cannot read|properties of null|typeerror/i);
 			expect(res.renderer).toBe('local');
-			expect(rejected).toBeLessThanOrEqual(1);
-			expect(completed).toBe(false);
+			expect(rejected).toBeLessThanOrEqual(1); // the abort released the in-flight reader exactly once
 		} finally {
 			for (const r of restore) r();
 		}
@@ -438,6 +447,16 @@ describe('fuse', () => {
 		expect(normalizeUrl('http://x.com/a')).not.toBe(normalizeUrl('https://x.com/a'));
 		expect(normalizeUrl('https://x.com:8443/a')).toBe('https://x.com:8443/a');
 		expect(normalizeUrl('https://www.x.com/a')).toBe('https://x.com/a');
+	});
+	test('normalizeUrl preserves path CASE (case-sensitive hosts are different resources)', () => {
+		expect(normalizeUrl('https://x.com/README.md')).toBe('https://x.com/README.md');
+		expect(normalizeUrl('https://x.com/readme.md')).toBe('https://x.com/readme.md');
+		expect(normalizeUrl('https://x.com/README.md')).not.toBe(normalizeUrl('https://x.com/readme.md'));
+	});
+	test('normalizeUrl preserves query ENCODING (a%2Fb is not a/b)', () => {
+		expect(normalizeUrl('https://x.com/search?q=a%2Fb')).toBe('https://x.com/search?q=a%2Fb');
+		expect(normalizeUrl('https://x.com/search?q=a/b')).toBe('https://x.com/search?q=a/b');
+		expect(normalizeUrl('https://x.com/search?q=a%2Fb')).not.toBe(normalizeUrl('https://x.com/search?q=a/b'));
 	});
 	test('junk downranking sinks score', () => {
 		const outcomes = [
@@ -614,6 +633,20 @@ describe('cache', () => {
 		expect(Object.keys(raw.entries)).toContain(stale);
 		rmSync(dir, { recursive: true, force: true });
 	});
+	test('corrupt non-numeric exp entries are treated as expired, never served', () => {
+		const dir = mkdtempSync(join(tmpdir(), 'wsearch-nan-'));
+		const path = join(dir, 'c.json');
+		// a tampered/legacy file: exp is not a number — "never expires" would
+		// serve it fresh forever and stale-if-error would render ~NaNh old
+		writeFileSync(
+			path,
+			JSON.stringify({ entries: { k: { exp: 'garbage', value: { poisoned: true } } }, order: ['k'] }),
+		);
+		const c = openCache(path);
+		expect(c.get('k')).toBeUndefined(); // never served fresh
+		expect(c.peekStale('k')).toBeUndefined(); // never served stale with a NaN age
+		rmSync(dir, { recursive: true, force: true });
+	});
 });
 
 describe('scrape', () => {
@@ -753,6 +786,18 @@ describe('scrape', () => {
 		expect(sections[2]).toContain('## Overview');
 		expect(sections[3]).toContain('## Uses');
 	});
+	test('sliceSections keeps outline aligned when a depth>4 heading sits among shallow ones', () => {
+		// the old code skipped h5/h6 in outlineNames while keeping them in
+		// sections: the arrays drifted and every later section was mislabeled
+		const doc = ['# Alpha', 'intro', '## Beta', 'b1', '##### Deep', 'd1', '## Gamma', 'g1'].join('\n\n');
+		const { outline, sections } = sliceSections(doc, 3000);
+		expect(outline).toEqual(['Alpha', 'Beta', 'Deep', 'Gamma']);
+		for (let i = 0; i < sections.length; i++) {
+			const name = (sections[i].match(/^#{1,6} ([^\n]+)/) ?? [])[1];
+			expect(name).toBeDefined();
+			expect(outline[i]).toBe(name); // outline[i] names exactly sections[i]
+		}
+	});
 	test('sliceSections drops promo/nag blocks but keeps real prose with a single incidental promo word', () => {
 		const doc = [
 			'Become a premium member',
@@ -882,6 +927,27 @@ describe('scrape', () => {
 		expect(res.text).toContain('hybrid search fusion pipelines');
 		expect(res.text).not.toContain('nav junk');
 	});
+	test('SSRF: a redirect hop into private space is rejected, not followed', async () => {
+		// hostile page 302 -> own loopback: the HOP must be re-validated, or the
+		// internal body (here /docs) would be served as legitimate content
+		const res = await scrape(`http://127.0.0.1:${port()}/redirect-internal`, {
+			allowPrivate: true,
+			render: 'local',
+		});
+		expect(res.error).toMatch(/private|redirect/i);
+		expect(res.text ?? '').not.toContain('Reciprocal Rank Fusion'); // internal body never served
+	});
+	test('a redirect loop cannot pin the fetch: hop validation bounds it', async () => {
+		// the local loop target is loopback, so the per-hop private gate returns
+		// first; on public hosts the hop cap (MAX_REDIRECTS) bounds it. Either
+		// way the fetch must terminate with an error and NEVER serve content.
+		const res = await scrape(`http://127.0.0.1:${port()}/redirect-loop`, {
+			allowPrivate: true,
+			render: 'local',
+		});
+		expect(res.error).toMatch(/too many redirects|private/i);
+		expect(res.text ?? '').toBe('');
+	});
 	test('rejects private hosts by default and bad schemes', () => {
 		expect(() => validateUrl(`http://127.0.0.1:${port()}/docs`, false)).toThrow(/private/);
 		expect(() => validateUrl('file:///etc/passwd', true)).toThrow(/protocol/);
@@ -900,6 +966,10 @@ describe('scrape', () => {
 		expect(isPrivateHost('[::ffff:a00:1]')).toBe(true); // 10.0.0.1
 		expect(isPrivateHost('[::ffff:cb00:7107]')).toBe(false); // 203.0.113.7, public
 		expect(isPrivateHost('[::1.2.3.4]')).toBe(false); // dotted form, public
+		// IPv4-compatible shorthand WHATWG serializes from ::a.b.c.d, e.g. ::127.0.0.1
+		expect(isPrivateHost('[::7f00:1]')).toBe(true); // ::127.0.0.1
+		expect(isPrivateHost('[::a00:1]')).toBe(true); // ::10.0.0.1
+		expect(isPrivateHost('[::cb00:7107]')).toBe(false); // ::203.0.113.7, public
 		// dotted-shorthand/obfuscated IPv4 (WHATWG already normalizes; guard catches)
 		expect(isPrivateHost('2130706433')).toBe(true); // 127.0.0.1 decimal
 		expect(isPrivateHost('0x7f.0.0.1')).toBe(true);

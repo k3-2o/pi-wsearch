@@ -44,9 +44,11 @@ export class TtlCache {
 			/* cache writes are best-effort */
 		}
 	}
+	/** Entry valid while unexpired; non-numeric/NaN exp (corrupt store) must NOT
+	 * count as "never expires" — treat it as expired so a poisoned entry dies. */
 	get(key: string): unknown | undefined {
 		const e = this.store.entries[key];
-		if (!e || e.exp < Date.now()) return undefined;
+		if (!e || typeof e.exp !== 'number' || !Number.isFinite(e.exp) || e.exp < Date.now()) return undefined;
 		const i = this.store.order.indexOf(key);
 		if (i >= 0) this.store.order.splice(i, 1);
 		this.store.order.push(key);
@@ -56,7 +58,7 @@ export class TtlCache {
 	/** Expired copy WITHOUT deleting it (stale-if-error reserve). */
 	peekStale(key: string): { value: unknown; ageHours: number } | undefined {
 		const e = this.store.entries[key];
-		if (!e) return undefined;
+		if (!e || typeof e.exp !== 'number' || !Number.isFinite(e.exp)) return undefined;
 		const ageHours = (Date.now() - e.exp) / 3600_000;
 		if (ageHours <= 0) return undefined;
 		return { value: e.value, ageHours };

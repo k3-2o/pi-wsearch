@@ -395,12 +395,18 @@ function selectEngines(opts: SearchOptions): EngineDef[] {
 
 export async function runEngines(opts: SearchOptions): Promise<EngineOutcome[]> {
 	const cfg = getConfig();
-	const chosen = selectEngines(opts).filter((def) => !deadEngines.has(def.id));
+	const selected = selectEngines(opts);
+	const chosen = selected.filter((def) => !deadEngines.has(def.id));
 	if (chosen.length === 0) {
 		const wanted = opts.engines ?? parseEngineList(getConfig().searchEngines);
-		const error = wanted?.length
-			? `no configured engines match the requested set (${wanted.join(', ')})`
-			: 'no search engine keys configured; run /websearch to add one';
+		// selected-but-dead means KEYS EXIST and the engines were temp-banned
+		// (stable HTTP 401/402/403): the old wording lied about the cause.
+		const error =
+			selected.length > 0
+				? 'all configured engines are temporarily unavailable (HTTP 401/402/403); try again later'
+				: wanted?.length
+					? `no configured engines match the requested set (${wanted.join(', ')})`
+					: 'no search engine keys configured; run /websearch to add one';
 		return [{ engine: 'none', hits: [], error, latencyMs: 0 }];
 	}
 	return Promise.all(

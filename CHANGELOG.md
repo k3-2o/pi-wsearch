@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.3.0 (2026-10-12)
+
+### Security
+
+- **SSRF via redirect: fixed.** Local fetch follows redirects by hand
+  (`redirect: 'manual'`) and re-validates every hop against the
+  private/loopback gates — a hostile page can no longer 302 the agent at its
+  own machine (probe: public page → 302 → 127.0.0.1 used to return the
+  internal body; vector incl. cloud metadata 169.254.169.254). Redirect loops
+  cap at 8 hops; etag/last-modified conditionals travel with the first hop
+  only.
+- IPv4-compatible IPv6 shorthand now covered: `[::7f00:1]` (`::127.0.0.1`)
+  and `[::a00:1]` (`10.0.0.1`) are rejected like their `::ffff:` mapped
+  forms.
+
+### Correctness
+
+- `sliceSections` outline stays lockstep with sections: depth-5/6 headings no
+  longer vanish from `outlineNames`, so `web.fetch` section indices never
+  label the wrong content on deep-heading pages.
+- `normalizeUrl` stops case-folding the path and stops re-serializing query
+  encoding: `/README` vs `/readme` and `?q=a%2Fb` vs `?q=a/b` are distinct
+  URLs again (fetch cache keys, fuse dedupe, fetchtrace attribution).
+- `normalizeHitDate`: “X months ago” renders as months, not minutes.
+- Cache: non-numeric `exp` entries (corrupt store) count as expired — never
+  served fresh, never served stale with `~NaNh old`.
+- Abort = throw: `web.fetch` pre-checks the signal at entry and re-checks
+  after scraping, so an interrupt is never masked by the stale-if-error
+  reserve.
+
+### UX / hygiene
+
+- `web.search` says why it returned nothing: keys exist but every engine is
+  temp-banned (HTTP 401/402/403) is its own message, not “no keys
+  configured”.
+- `fb.watch` joins the junk list.
+- Dead code removed (`ABORT_ERROR_LOCAL`, `fmtSize`); vacuous `completed`
+  flag deleted from the abort test; `var snapTs` block-scoped.
+- SSRF gates moved to `src/urls.ts` (import-free leaf) so transport shares
+  them without a cycle.
+
 ## 0.2.2 (2026-10-08)
 
 ### Fetch
