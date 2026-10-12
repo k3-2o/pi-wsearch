@@ -3,6 +3,8 @@ import { isJunk, normalizeUrl, hostOf } from './urls';
 
 export interface FusedHit extends SearchHit {
 	engines: string[];
+	/** Per-engine rank of this hit: {serper: 1} = serper ranked it #1. */
+	engineRanks: { engine: string; rank: number }[];
 	rrfScore: number;
 	finalScore: number;
 	junk: boolean;
@@ -207,6 +209,12 @@ function collapseNearDuplicates(fused: FusedHit[]): FusedHit[] {
 		const twin = kept.find((k) => isNearDuplicate(k, h));
 		if (twin) {
 			twin.engines = [...new Set([...twin.engines, ...h.engines])];
+			const best = new Map(twin.engineRanks.map((r) => [r.engine, r]));
+			for (const r of h.engineRanks) {
+				const cur = best.get(r.engine);
+				if (!cur || r.rank < cur.rank) best.set(r.engine, r);
+			}
+			twin.engineRanks = [...best.values()];
 			if (h.snippet.length > twin.snippet.length) twin.snippet = h.snippet;
 			if (h.title.length > twin.title.length && !twin.title.includes(h.title)) twin.title = h.title;
 			continue;
@@ -250,6 +258,7 @@ export function fuse(outcomes: EngineOutcome[], opts: FuseOptions = {}): FusedHi
 		fused.push({
 			...hit,
 			engines: ranks.map((r) => r.engine),
+			engineRanks: [...ranks].toSorted((a, b) => a.rank - b.rank),
 			rrfScore: rrf,
 			finalScore: Math.round(score * 1e5) / 1e5,
 			junk,

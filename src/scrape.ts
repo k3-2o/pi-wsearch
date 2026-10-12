@@ -627,7 +627,7 @@ function fromChain(
 	sectionCap: number,
 	maxChars: number,
 ): ScrapeResult {
-	let markdown = stripDataUriImages(doc.markdown);
+	let markdown = cleanReaderMarkdown(stripDataUriImages(doc.markdown));
 	let title = doc.title;
 	if (looksLikeHtml(markdown)) {
 		const extracted = extractHtml(markdown);
@@ -729,8 +729,10 @@ export async function scrape(urlRaw: string, opts: ScrapeOptions = {}): Promise<
 	}
 
 	const usable = (markdown: string): boolean => {
-		if (markdown.replace(/\s+/g, '').length < 100) return false;
-		const { sections } = sliceSections(markdown, DEFAULT_SECTION_CAP);
+		const md = cleanReaderMarkdown(markdown);
+		if (md.replace(/\s+/g, '').length < 100) return false;
+		if (notFoundDoc(md)) return false;
+		const { sections } = sliceSections(md, DEFAULT_SECTION_CAP);
 		return sections.length > 0;
 	};
 
@@ -771,6 +773,43 @@ export async function scrape(urlRaw: string, opts: ScrapeOptions = {}): Promise<
 		return chainResult.aborted || opts.signal?.aborted ? abortResult(url) : errorResult(url, chainResult.error);
 	}
 	return fromChain(url, chainResult.doc, sectionCap, maxChars);
+}
+
+/** Whole-line news junk in reader output: photo credits, carousel markers,
+ * video durations, relative-time chips. Prose lines are untouched. */
+const READER_JUNK_LINE_RE = [
+	// bare credits: "REUTERS/Sofiia Gatilova", "AP Photo/John Smith"
+	/^(?:reuters|ap photo|getty images|afp|epa)\/(?:[a-z0-9][\w.' -]{1,80})$/i,
+	// handout/file photo tags at line end: "…REUTERS/Rachel Wisniewski/File Photo"
+	/\/(?:file|handout)\s+photo\s*\.*$/i,
+	// carousel markers: "Item 1 of 15"
+	/^item\s+\d{1,3}\s+of\s+\d{1,3}\s*$/i,
+	// video durations: "0:48"
+	/^\d{1,3}:\d{2}$/,
+	// relative-time chips: "* 1 hour ago", "just now", "yesterday"
+	/^[*\-–—]?\s*(?:just now|today|yesterday|\d+\s*(?:m|min(?:ute)?s?|hrs?|h|hours?|d|days?|w|weeks?)\s*ago\.?)\s*$/i,
+];
+
+const NOT_FOUND_DOC_RE =
+	/(?:page|url|requested page|webpage)[^.]{0,40}(?:not found|not be found|cannot be found|does not exist|doesn't exist|no longer exists|error 404|404 error|404 not found)|we (?:couldn't|could not|can't) find(?: the)? (?:page|requested|article|that)|it looks like there isn't a page/i;
+
+/** Best-effort scrub of reader markdown (news sites leak credits/captions). */
+export function cleanReaderMarkdown(markdown: string): string {
+	const out: string[] = [];
+	let inFence = false;
+	for (const line of markdown.split('\n')) {
+		if (/^\s*(?:```|~~~)/.test(line)) inFence = !inFence;
+		const t = line.trim();
+		if (!inFence && t && t.length <= 200 && READER_JUNK_LINE_RE.some((re) => re.test(t))) continue;
+		out.push(line);
+	}
+	return out.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
+/** True for a 404-style reader stub; the chain skips it and tries the next backend. */
+export function notFoundDoc(markdown: string): boolean {
+	if (markdown.replace(/\s+/g, '').length > 500) return false;
+	return NOT_FOUND_DOC_RE.test(markdown.slice(0, 300));
 }
 
 /** Compose outline + sections; the cap is honest (marker included). */

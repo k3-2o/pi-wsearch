@@ -7,9 +7,11 @@
 **One search, many judges.** Most web tools hand you a single engine's
 ranking. `web.search` runs every engine you've configured in parallel and
 merges their results by reciprocal rank fusion (RRF). A hit only earns its
-place by surviving several independent judgments. The response shows how
-many: `← 3 engines agree` means three separate indexes ranked that page.
-Agreement is the spam defense; generative-SEO can stuff one index, not three.
+place by surviving several independent judgments. The response shows the
+corroboration in detail: `⇐ serper#1, exa#2, you#4` means three separate
+indexes ranked that page — and where each one placed it. Single-engine hits
+are labeled `single-engine: unverified`. Agreement is the spam defense;
+generative-SEO can stuff one index, not three.
 
 **Pick your engines.** Nine are supported; three or four is plenty. Use
 whatever keys you have, even one, because what follows doesn't depend on how
@@ -42,7 +44,11 @@ Every cut is marked — nothing is silently lost.
 **Reads are free.** Page parsing is built in, nothing billed per read, no key
 required. Real headings become the map, TOC echoes get dropped, so reads come
 back as clean as a paid one at zero cost. Paid readers only step in for
-JavaScript heavy pages or when the local read fails.
+JavaScript heavy pages or when the local read fails. Reader output is
+laundered too: standalone photo credits (REUTERS/, AP Photo/, Getty), video
+durations, carousel markers and relative-time chips are stripped from news
+pages (whole-line rules only — prose is untouched), and a reader that returns
+a 404-page template is skipped so the chain moves on to the next backend.
 
 **Tracking links cache as one page.** `?utm_source=…` variants of the same URL
 share one 24 hour cache entry. Faster repeats, smaller disk.

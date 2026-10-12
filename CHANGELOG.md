@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.1 (2026-10-13)
+
+### Search
+
+- Per-hit corroboration detail replaces the bare agreement count:
+  `⇐ serper#1, exa#2, you#4` shows where each engine placed the hit;
+  single-engine hits render `⇐ engine only (single-engine: unverified)`.
+  `engineRanks` is exposed in `structuredContent` results too.
+
+### Fetch
+
+- Reader-markdown cleanup for news pages: standalone photo credits
+  (REUTERS/, AP Photo/, Getty Images), carousel “Item N of M” markers, video
+  durations (0:48) and relative-time chips (`* 1 hour ago`) are stripped
+  (whole-line rules only — prose mentioning a credit survives untouched).
+- Reader output that is a 404/not-found template (≤500 chars + classic
+  phrasing, e.g. firecrawl’s “We can’t find that page” on a walled URL) is
+  rejected and the chain advances to the next backend instead of ending on a
+  stub.
+
 ## 0.3.0 (2026-10-12)
 
 ### Security

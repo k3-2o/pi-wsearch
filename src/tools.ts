@@ -21,7 +21,7 @@ import {
 import { ABORT_ERROR, DEFAULT_MAX_RESULTS } from './constants';
 import { cacheKey, openCache, CACHE_TTL_HOURS } from './cache';
 import { clearDeadEngines, runEngines } from './engines';
-import { fuse, diversifyByHost } from './fuse';
+import { fuse, diversifyByHost, type FusedHit } from './fuse';
 import { hostOf, normalizeUrl } from './urls';
 import { scrape } from './scrape';
 
@@ -228,7 +228,7 @@ export function registerWebTools(pi: ExtensionAPI) {
 				});
 				const title = fmtSnippet(stripSiteSuffix(cleanSnippet(r.title), hostOf(r.url)), 100) || r.url;
 				const snippet = fmtSnippet(cleanSnippet(r.snippet), snip);
-				const via = r.engines.length > 1 ? ` ← ${r.engines.length} engines agree` : ` ← ${r.engines[0]}`;
+				const via = formatEvidence(r);
 				const when = normalizeHitDate(r.date);
 				text += `${i + 1}. [${title}](${r.url})${when ? ` — ${when}` : ''}${via}\n`;
 				if (snippet) text += `   ${snippet}\n`;
@@ -249,6 +249,7 @@ export function registerWebTools(pi: ExtensionAPI) {
 						url: r.url,
 						title: r.title,
 						engines: r.engines,
+						ranks: r.engineRanks,
 						score: r.finalScore,
 					})),
 				},
@@ -395,6 +396,18 @@ function colorizedResult(text: string, theme: Theme): string {
 			return l;
 		})
 		.join('\n');
+}
+
+/** Per-hit evidence line: "⇐ serper#1, exa#2"; singles are unverified. */
+function formatEvidence(r: FusedHit): string {
+	if (!r.engineRanks?.length) return r.engines.length > 1 ? ` ← ${r.engines.length} engines` : '';
+	if (r.engineRanks.length === 1) return ` ⇐ ${r.engineRanks[0].engine} only (single-engine: unverified)`;
+	const shown = r.engineRanks
+		.slice(0, 6)
+		.map((e) => `${e.engine}#${e.rank}`)
+		.join(', ');
+	const rest = r.engineRanks.length > 6 ? `, +${r.engineRanks.length - 6} more` : '';
+	return ` ⇐ ${shown}${rest}`;
 }
 
 function resultText(result: { content: { type: string; text?: string }[] }): string {

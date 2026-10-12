@@ -37,6 +37,8 @@ import {
 	joinSections,
 	sliceSections,
 	scrape,
+	cleanReaderMarkdown,
+	notFoundDoc,
 	validateUrl,
 } from '../src/scrape';
 import { stubReader } from '../src/transport';
@@ -396,16 +398,20 @@ describe('engines (live)', () => {
 	});
 });
 
-const mkHit = (url: string, engine: string, title = url, snippet = 's'): FusedHit => ({
-	title,
-	url,
-	snippet,
-	engine,
-	engines: [engine],
-	rrfScore: 0.1,
-	finalScore: 0.5,
-	junk: false,
-});
+function mkHit(url: string, engine: string, title = url, snippet = 's'): FusedHit {
+	const h: FusedHit = {
+		title,
+		url,
+		snippet,
+		engine,
+		engines: [engine],
+		engineRanks: [{ engine, rank: 1 }],
+		rrfScore: 0.1,
+		finalScore: 0.5,
+		junk: false,
+	};
+	return h;
+}
 
 describe('fuse', () => {
 	test('isJunk: mirror laundries die with their primaries; legit paths pass', () => {
@@ -438,6 +444,45 @@ describe('fuse', () => {
 		const merged = fused.find((r) => normalizeUrl(r.url) === 'https://example.com/a');
 		expect(merged).toBeDefined();
 		expect(merged!.engines.toSorted()).toEqual(['serper', 'tavily']);
+	});
+	test('fuse keeps per-engine placement (engineRanks) sorted by rank', () => {
+		const outcomes = [
+			{ engine: 'serper', hits: [mkHit('https://example.com/x', 'serper', 't', 's')], latencyMs: 1 },
+			{ engine: 'exa', hits: [mkHit('https://example.com/x', 'exa', 't', 's')], latencyMs: 1 },
+			{ engine: 'you', hits: [mkHit('https://example.com/x', 'you', 't', 's')], latencyMs: 1 },
+		];
+		const fused = fuse(outcomes as any);
+		expect(fused).toHaveLength(1);
+		expect(fused[0].engineRanks).toEqual([
+			{ engine: 'serper', rank: 1 },
+			{ engine: 'exa', rank: 1 },
+			{ engine: 'you', rank: 1 },
+		]);
+	});
+	test('near-duplicate collapse merges engineRanks keeping the best rank per engine', () => {
+		// same title across different URLs: the collapse path, not exact dedupe
+		const outcomes = [
+			{
+				engine: 'serper',
+				hits: [
+					mkHit('https://example.com/a', 'serper', 'SQLite 3.49 Released with New Enhancements', 's1'),
+					mkHit('https://example.com/b', 'serper', 'SQLite 3.49 Released with New Enhancements', 's2'),
+				],
+				latencyMs: 1,
+			},
+			{
+				engine: 'exa',
+				hits: [mkHit('https://example.com/c', 'exa', 'SQLite 3.49 Released with New Enhancements', 's3')],
+				latencyMs: 1,
+			},
+		];
+		const fused = fuse(outcomes as any);
+		expect(fused).toHaveLength(1);
+		expect(fused[0].engines).toEqual(['serper', 'exa']);
+		expect(fused[0].engineRanks).toEqual([
+			{ engine: 'serper', rank: 1 },
+			{ engine: 'exa', rank: 1 },
+		]);
 	});
 	test('strips tracking params in normalizeUrl', () => {
 		expect(normalizeUrl('https://a.com/x?utm_source=1&id=2#frag')).toBe('https://a.com/x?id=2');
@@ -797,6 +842,39 @@ describe('scrape', () => {
 			expect(name).toBeDefined();
 			expect(outline[i]).toBe(name); // outline[i] names exactly sections[i]
 		}
+	});
+	test('cleanReaderMarkdown strips standalone news junk but keeps prose', () => {
+		const md = [
+			'## World',
+			'real paragraph about events.',
+			'REUTERS/Sofiia Gatilova',
+			'Item 1 of 15',
+			'Protesters clashed in New Delhi on October 11. REUTERS/Priyanshu Singh',
+			'0:48',
+			'* 1 hour ago',
+			'---',
+			'```',
+			'REUTERS/inside-fence',
+			'```',
+			'AP Photo/John Smith',
+			'the 6:30 train still runs',
+		].join('\n');
+		const out = cleanReaderMarkdown(md);
+		expect(out).not.toContain('REUTERS/Sofiia Gatilova');
+		expect(out).not.toContain('Item 1 of 15');
+		expect(out).not.toContain('0:48');
+		expect(out).not.toContain('1 hour ago');
+		expect(out).not.toContain('AP Photo/John Smith');
+		expect(out).toContain('REUTERS/inside-fence'); // fenced code is untouched
+		expect(out).toContain('REUTERS/Priyanshu Singh'); // prose+caption on one line survives
+		expect(out).toContain('the 6:30 train still runs'); // "6:30" inside prose survives
+	});
+	test('notFoundDoc flags 404-template reader output, not real content', () => {
+		expect(notFoundDoc("We can't find that page. Check the URL or go back.")).toBe(true);
+		expect(notFoundDoc('404 Not Found — the requested page does not exist.')).toBe(true);
+		expect(notFoundDoc("It looks like there isn't a page at this address.")).toBe(true);
+		expect(notFoundDoc('Real content with more than five hundred characters of actual prose. '.repeat(15))).toBe(false);
+		expect(notFoundDoc('A real news article body that mentions 404 as a number in passing. ')).toBe(false);
 	});
 	test('sliceSections drops promo/nag blocks but keeps real prose with a single incidental promo word', () => {
 		const doc = [
