@@ -5,7 +5,7 @@
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from '@earendil-works/pi-coding-agent';
 import { keyHint } from '@earendil-works/pi-coding-agent';
-import { Text } from '@earendil-works/pi-tui';
+import { Text, type Component } from '@earendil-works/pi-tui';
 import { appendFileSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
@@ -20,9 +20,10 @@ import {
 } from './config';
 import { ABORT_ERROR, DEFAULT_MAX_RESULTS } from './constants';
 import { cacheKey, openCache, CACHE_TTL_HOURS } from './cache';
-import { clearDeadEngines, runEngines } from './engines';
-import { fuse, diversifyByHost, type FusedHit } from './fuse';
-import { hostOf, normalizeUrl } from './urls';
+import { clearDeadEngines, runEngines, type EngineOutcome } from './engines';
+import { fuse, diversifyByHost } from './fuse';
+import { normalizeUrl } from './urls';
+import { buildSearchText, READ_FIRST_TAG, wrapAll } from './view';
 import { scrape } from './scrape';
 
 const SEARCH_PARAMS = Type.Object({
@@ -86,11 +87,6 @@ const FETCH_OUTPUT = Type.Object({
 	error: Type.Optional(Type.String()),
 });
 
-function fmtSnippet(s: string, max: number): string {
-	const t = s.replace(/\s+/g, ' ').trim();
-	return t.length > max ? t.slice(0, max) + '…' : t;
-}
-
 function dropRarestTerm(query: string): string {
 	const words = query.split(/\s+/).filter((w) => w.length > 2 && !/^(?:site|inurl|intitle|filetype):/i.test(w));
 	if (words.length < 2) return '';
@@ -98,54 +94,6 @@ function dropRarestTerm(query: string): string {
 	return query
 		.replace(rarest, ' ')
 		.replace(/\s{2,}/g, ' ')
-		.trim();
-}
-
-function stripSiteSuffix(title: string, host: string): string {
-	const m = /^(.{3,})\s+[|–—-]\s+([^|–—-]{2,40})$/.exec(title.trim());
-	if (!m) return title;
-	const suffix = m[2].trim();
-	const head = m[1].trim();
-	const hostBase = host.replace(/^www\./, '').split('.')[0];
-	if (host && (suffix.toLowerCase().includes(hostBase) || suffix.length <= 25)) return head;
-	return title;
-}
-
-function normalizeHitDate(raw: string | undefined): string | undefined {
-	if (!raw) return undefined;
-	const t = Date.parse(raw);
-	if (!Number.isNaN(t)) return new Date(t).toISOString().slice(0, 10);
-	const rel = /^(\d+)\s*(m|min|minute|minutes|h|hour|hours|d|day|days|w|week|weeks|mo|month|months)\b/i.exec(
-		raw.trim(),
-	);
-	if (rel) {
-		const n = parseInt(rel[1], 10);
-		const unit = rel[2].toLowerCase();
-		// 'mo' must win over 'm' BEFORE the minutes branch: the regex captures
-		// 'months' verbatim, so a bare startsWith('m') misclassifies it ("3
-		// months ago" used to render as ~today). Divide by unit, in months>…>ms.
-		const ms = unit.startsWith('h')
-			? 3_600_000
-			: unit.startsWith('mo')
-				? 2_592_000_000
-				: unit.startsWith('m')
-					? 60_000
-					: unit.startsWith('d')
-						? 86_400_000
-						: 604_800_000;
-		return new Date(Date.now() - n * ms).toISOString().slice(0, 10);
-	}
-	if (/^yesterday$/i.test(raw.trim())) return new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
-	return undefined;
-}
-
-function cleanSnippet(s: string): string {
-	return s
-		.replace(/\\([_*`[\]()#>~.-])/g, '$1')
-		.replace(/!\[[^\]]*\]\([^)]*\)/g, '')
-		.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-		.replace(/(^|\s)([*]{1,3}|_{1,2}|`)(\S(?:[^*`_]*\S)?)\2(?=\s|$|[.,;:!?)]|\b)/g, '$1$3')
-		.replace(/\s+/g, ' ')
 		.trim();
 }
 
@@ -173,6 +121,13 @@ export function registerWebTools(pi: ExtensionAPI) {
 		annotations: { readOnlyHint: true, openWorldHint: true },
 		parameters: SEARCH_PARAMS,
 		outputSchema: SEARCH_OUTPUT,
+
+		renderCall(args, theme) {
+			const header = theme.fg('toolTitle', theme.bold('web.search'));
+			const q = typeof args.query === 'string' ? args.query : '…';
+			const tail = typeof args.max_results === 'number' ? theme.fg('muted', ` max=${args.max_results}`) : '';
+			return new Text(`${header} ${theme.fg('accent', q)}${tail}`, 0, 0);
+		},
 
 		async execute(_id, params, signal, _onUpdate, _ctx) {
 			if (signal?.aborted) throw new Error(ABORT_ERROR);
@@ -213,38 +168,32 @@ export function registerWebTools(pi: ExtensionAPI) {
 							fused.filter((r) => !r.junk),
 							2,
 						).slice(0, Math.max((params.max_results ?? DEFAULT_MAX_RESULTS) * 2, DEFAULT_MAX_RESULTS));
-						if (candidates.length) retryNote = ` (retried as "${relaxed}" after zero results)`;
+						if (candidates.length) retryNote = `retried as "${relaxed}"`;
 					}
 				}
 			}
 			const visible = candidates.slice(0, params.max_results ?? DEFAULT_MAX_RESULTS);
 			const enginesUsed = [...new Set(fused.flatMap((r) => r.engines))];
-			const snip = 240;
-
-			let text = `${visible.length} result${visible.length === 1 ? '' : 's'} for "${params.query}": ${enginesUsed.length} engine${enginesUsed.length === 1 ? '' : 's'} contributed (${enginesUsed.join(', ')})${retryNote}\n\n`;
-			if (!visible.length) {
-				const fatal = outcomes.find((o) => o.engine === 'none' && o.error);
-				text = fatal
-					? `No results for "${params.query}": ${fatal.error}\n`
-					: `No results for "${params.query}". Broaden the query.\n`;
-			}
 			visible.forEach((r, i) => {
 				lastSearch.urlRank.set(normalizeUrl(r.url), {
 					rank: i + 1,
 					engines: r.engines,
 					query: params.query,
 				});
-				const title = fmtSnippet(stripSiteSuffix(cleanSnippet(r.title), hostOf(r.url)), 100) || r.url;
-				const snippet = fmtSnippet(cleanSnippet(r.snippet), snip);
-				const via = formatEvidence(r);
-				const when = normalizeHitDate(r.date);
-				text += `${i + 1}. [${title}](${r.url})${when ? ` — ${when}` : ''}${via}\n`;
-				if (snippet) text += `   ${snippet}\n`;
-				text += '\n';
 			});
-			if (errored.length) {
-				text += `⚠ engines: ${errored.map((e) => `${e.engine} (${e.error.slice(0, 80)})`).join('; ')}\n`;
-			}
+			const text = buildSearchText(
+				{
+					query: params.query,
+					hits: visible,
+					enginesUsed,
+					errored,
+					fatal: visible.length
+						? undefined
+						: outcomes.find((o): o is EngineOutcome & { error: string } => o.engine === 'none' && !!o.error),
+					retryNote,
+				},
+				{ wrap: terminalWrapWidth() },
+			);
 
 			return {
 				content: [{ type: 'text', text }],
@@ -264,9 +213,7 @@ export function registerWebTools(pi: ExtensionAPI) {
 			};
 		},
 		renderResult(result, options, theme) {
-			const lines = resultText(result).split('\n');
-			if (!options.expanded) return new Text(previewWithHint(lines, theme), 0, 0);
-			return new Text(colorizedResult(resultText(result), theme), 0, 0);
+			return new WrappedSearchText(resultText(result), theme, options.expanded);
 		},
 	});
 
@@ -288,7 +235,7 @@ export function registerWebTools(pi: ExtensionAPI) {
 			const url = typeof args.url === 'string' ? args.url : '…';
 			const s = Array.isArray(args.sections) ? args.sections.join(', ') : '…';
 			const tail = args.sections ? ` sections=[${s}]` : '';
-			return new Text(`${header} ${theme.fg('muted', url + tail)}`, 0, 0);
+			return new Text(`${header} ${theme.fg('accent', url)}${theme.fg('muted', tail)}`, 0, 0);
 		},
 
 		async execute(_id, params, signal) {
@@ -379,6 +326,7 @@ interface FetchResult {
 }
 
 const PREVIEW_LINES = 10;
+const SEARCH_PREVIEW_LINES = 8;
 
 /** Display-only: the model-facing markers (`indices …`, `- *N*`) render as
  * genuine ANSI italics in the TUI; the content text itself is untouched. */
@@ -388,49 +336,87 @@ function italicizeIndices(text: string, theme: Theme): string {
 		.replace(/^- \*(\d+)\* /gm, (_, n: string) => `- ${theme.italic(n)} `);
 }
 
+function italicizeRanks(text: string, theme: Theme): string {
+	return text.replace(/^(\s*)(\d+)\.(?=\s)/gm, (m, pad: string, n: string) => `${pad}${theme.italic(n)}.`);
+}
+
+const ANSI_SGR = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+
+const DEFAULT_WRAP_COLS = 90;
+const MAX_WRAP_COLS = 240;
+
+function terminalWrapWidth(): number {
+	const cols = process.stdout.columns ?? DEFAULT_WRAP_COLS;
+	return Math.min(MAX_WRAP_COLS, Math.max(60, cols - 4));
+}
+
+class WrappedSearchText implements Component {
+	private raw: string;
+	private theme: Theme;
+	private expanded: boolean;
+	constructor(raw: string, theme: Theme, expanded: boolean) {
+		this.raw = raw;
+		this.theme = theme;
+		this.expanded = expanded;
+	}
+	invalidate(): void {}
+	render(width: number): string[] {
+		const wrapped = wrapAll(this.raw, Math.max(40, width));
+		const lines = wrapped.split('\n');
+		let shown = lines;
+		let hint = '';
+		if (!this.expanded && lines.length > SEARCH_PREVIEW_LINES) {
+			shown = lines.slice(0, SEARCH_PREVIEW_LINES);
+			hint = moreLinesHint(shown.length, lines.length, this.theme);
+		}
+		const colored = italicizeRanks(shown.join('\n'), this.theme)
+			.split('\n')
+			.map((l) => colorLine(l, this.theme))
+			.join('\n');
+		return replaceTabs(colored + hint).split('\n');
+	}
+}
+
+function colorLine(l: string, theme: Theme): string {
+	const plain = l.replace(ANSI_SGR, '');
+	if (
+		plain.includes('…[section truncated') ||
+		plain.includes('…(continues at outline index') ||
+		plain.startsWith('…[clipped by tool]') ||
+		plain.startsWith('…[truncated]')
+	)
+		return theme.fg('warning', l);
+	if (plain.startsWith('## ') && plain.endsWith(READ_FIRST_TAG))
+		return theme.fg('accent', l.slice(0, l.length - READ_FIRST_TAG.length)) + theme.bold(READ_FIRST_TAG);
+	if (/^\s*· recommended first read$/.test(plain)) return theme.bold(l.trimEnd());
+	if (plain.startsWith('## ')) return theme.fg('accent', l);
+	if (plain.startsWith('- ')) return theme.fg('dim', l);
+	if (plain.startsWith('[rendered via')) return theme.fg('muted', l);
+	if (/^\s*\d+\. /.test(plain)) return theme.fg('dim', l);
+	return l;
+}
+
 function colorizedResult(text: string, theme: Theme): string {
 	return text
 		.split('\n')
-		.map((l) => {
-			if (
-				l.includes('…[section truncated') ||
-				l.includes('…(continues at outline index') ||
-				l.startsWith('…[clipped by tool]') ||
-				l.startsWith('…[truncated]')
-			)
-				return theme.fg('warning', l);
-			if (l.startsWith('## [')) return theme.fg('accent', l);
-			if (l.startsWith('- ')) return theme.fg('dim', l);
-			if (l.startsWith('[rendered via')) return theme.fg('muted', l);
-			if (/^\d+\. /.test(l)) return theme.fg('toolOutput', l);
-			return l;
-		})
+		.map((l) => colorLine(l, theme))
 		.join('\n');
-}
-
-/** Per-hit evidence line: "⇐ serper#1, exa#2"; singles are unverified. */
-function formatEvidence(r: FusedHit): string {
-	if (!r.engineRanks?.length) return r.engines.length > 1 ? ` ← ${r.engines.length} engines` : '';
-	if (r.engineRanks.length === 1) return ` ⇐ ${r.engineRanks[0].engine} only (single-engine: unverified)`;
-	const shown = r.engineRanks
-		.slice(0, 6)
-		.map((e) => `${e.engine}#${e.rank}`)
-		.join(', ');
-	const rest = r.engineRanks.length > 6 ? `, +${r.engineRanks.length - 6} more` : '';
-	return ` ⇐ ${shown}${rest}`;
 }
 
 function resultText(result: { content: { type: string; text?: string }[] }): string {
 	return (result.content[0] as { type: string; text: string } | undefined)?.text ?? '';
 }
 
-function previewWithHint(lines: string[], theme: Theme): string {
-	const shown = lines.slice(0, PREVIEW_LINES);
-	const remaining = lines.length - shown.length;
+function moreLinesHint(shown: number, total: number, theme: Theme): string {
+	const remaining = total - shown;
+	if (remaining <= 0) return '';
+	return theme.fg('muted', `\n… (${remaining} more lines, ${keyHint('app.tools.expand', 'to expand')})`);
+}
+
+function previewWithHint(lines: string[], theme: Theme, maxLines = PREVIEW_LINES): string {
+	const shown = lines.slice(0, maxLines);
 	const text = shown.map((l) => theme.fg('toolOutput', replaceTabs(l))).join('\n');
-	if (remaining > 0)
-		return text + theme.fg('muted', `\n… (${remaining} more lines, ${keyHint('app.tools.expand', 'to expand')})`);
-	return text;
+	return text + moreLinesHint(shown.length, lines.length, theme);
 }
 
 function replaceTabs(text: string): string {

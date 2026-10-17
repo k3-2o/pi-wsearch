@@ -2,15 +2,16 @@
 
 ## Unreleased
 
-### Fetch
+## 0.3.2 (2026-10-17)
 
-- Codemode parity: `structuredContent.sections` now carries each section's
-  body text under the same budget as the text view. Scripts read what the
-  model reads.
-- Truncation accounting split: `sections_truncated` counts server-side
-  continuation cuts only; local budget clips report via new `sections_clipped`
-  indices. No more double-counting; `section_count` matches the emitted
-  `sections` array.
+### Search
+
+- Results are map-first: a compact engines line, a TOC of every hit, then one
+  short entry per hit with the URL, date, and corroboration. The TOC is the
+  collapsed default; entries expand on demand.
+- Display cleanup: snippets and titles are scrubbed of escapes, headings,
+  table pipes, timecodes, counts, and citation links; stray punctuation is
+  normalized.
 
 ## 0.3.1 (2026-10-13)
 

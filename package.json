@@ -1,6 +1,6 @@
 {
   "name": "pi-wsearch",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Pi extension: web.search + web.fetch",
   "license": "MIT",
   "type": "module",
@@ -36,7 +36,7 @@
     "check": "oxlint && oxfmt --check && tsc --noEmit && knip && bun test --jobs 1 test/",
     "test": "bun test --jobs 1 test/",
     "typecheck": "tsc --noEmit",
-    "knip": "knip",
+    "knip": "bun scripts/knip.mjs",
     "coverage": "bun test --jobs 1 test/ --coverage"
   },
   "pi": {
