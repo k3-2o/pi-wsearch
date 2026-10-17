@@ -18,6 +18,7 @@ import {
 	type RemoteDoc,
 	type Renderer,
 } from './transport';
+import { headScan, treeToMarkdownish } from './dom';
 
 export interface ScrapeResult {
 	url: string;
@@ -94,35 +95,6 @@ export function decodeHtmlEntities(s: string): string {
 	});
 }
 
-function stripKatexSpans(h: string): string {
-	let out = '';
-	let i = 0;
-	for (;;) {
-		const start = /<span[^>]*class="[^"]*katex[^"]*"[^>]*>/i.exec(h.slice(i));
-		if (!start || start.index === undefined) {
-			out += h.slice(i);
-			break;
-		}
-		const abs = i + start.index;
-		out += h.slice(i, abs);
-		let depth = 1;
-		let j = abs + start[0].length;
-		while (depth > 0 && j < h.length) {
-			const next = /<span\b[^>]*>|<\/span>/gi;
-			next.lastIndex = j;
-			const tag = next.exec(h);
-			if (!tag) {
-				j = h.length;
-				break;
-			}
-			j = tag.index + tag[0].length;
-			depth += tag[0].startsWith('</') ? -1 : 1;
-		}
-		i = j;
-	}
-	return out;
-}
-
 export function extractHtml(html: string): { title: string; text: string; publishedAt?: string; paywalled: boolean } {
 	const paywalled =
 		/class="[^"]*(?:fc-ab-root|metering-modal|paywall|pw-overlay|subscription-overlay|regwall)[^"]*"/i.test(html) ||
@@ -130,61 +102,8 @@ export function extractHtml(html: string): { title: string; text: string; publis
 		/<meta[^>]+(?:property|name)=["'](?:isAccessibleForFree|tunnel:[^"']*paywall)["'][^>]+content=["'](?:false|yes)["']/i.test(
 			html,
 		);
-	const title =
-		/<title[^>]*>([^<]*)<\/title>/i.exec(html)?.[1]?.trim()?.slice(0, 200) ||
-		/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i.exec(html)?.[1]?.slice(0, 200) ||
-		'';
-	const publishedAt = extractPublishedDate(html);
-	let h = html
-		.replace(/<script[\s\S]*?<\/script>/gi, ' ')
-		.replace(/<style[\s\S]*?<\/style>/gi, ' ')
-		.replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
-		.replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
-		.replace(/<!--[\s\S]*?-->/g, ' ')
-		.replace(/<nav[\s\S]*?<\/nav>/gi, ' ')
-		.replace(/<footer[\s\S]*?<\/footer>/gi, ' ')
-		.replace(/<aside[\s\S]*?<\/aside>/gi, ' ');
-	h = h.replace(/<pre[\s>][\s\S]*?<\/pre>/gi, (m) => m.replace(/\n/g, '\uE000'));
-	h = h.replace(/<table[\s>][\s\S]*?<\/table>/gi, (table) => {
-		const rows = [...table.matchAll(/<tr[\s>][\s\S]*?<\/tr>/gi)].map((r) =>
-			[...r[0].matchAll(/<t([hd])[\s>][\s\S]*?<\/t\1>/gi)].map((c) =>
-				c[0]
-					.replace(/<[^>]+>/g, ' ')
-					.replace(/\s+/g, ' ')
-					.replace(/\|/g, '\\|')
-					.trim(),
-			),
-		);
-		const grid = rows.filter((r) => r.length);
-		if (grid.length < 2) return table;
-		const cols = Math.max(...grid.map((g) => g.length));
-		if (cols < 2) return table;
-		const line = (g: string[]) => {
-			const cells = g.slice(0, cols);
-			while (cells.length < cols) cells.push(' ');
-			return `| ${cells.join(' | ')} |`;
-		};
-		const md = [line(grid[0]), `| ${Array.from({ length: cols }, () => '---').join(' | ')} |`];
-		for (const g of grid.slice(1)) md.push(line(g));
-		return `\n${md.join('\n')}\n`;
-	});
-	h = stripKatexSpans(h);
-	h = h.replace(/<math[\s>][\s\S]*?<\/math>/gi, (m) => {
-		const tex = /<annotation[^>]*encoding=["']application\/x-tex["'][^>]*>([\s\S]*?)<\/annotation>/i.exec(m)?.[1];
-		return tex?.trim() ? ` $${tex.trim()}$ ` : ' ';
-	});
-	h = h.replace(
-		/<h([1-6])[^>]*>(.*?)<\/h\1>/gis,
-		(_, n, inner) => `\n${'#'.repeat(Number(n))} ${inner.replace(/<[^>]+>/g, ' ').trim()}\n`,
-	);
-	h = h
-		.replace(/<li[^>]*>/gi, '\n• ')
-		.replace(/<\/(p|div|li|tr|section|article|blockquote|table|ul|ol|pre)>/gi, '\n')
-		.replace(/<(br|hr)[^>]*>/gi, '\n');
-	// strip tags first, THEN decode entities: escaped markup shown as literal
-	// text (`&lt;limit...&gt;`) must survive as text, not be stripped as a tag
-	h = h.replace(/<[^>]+>/g, ' ');
-	h = h.replace(/\uE000/g, '\n');
+	const { title, publishedAt } = headScan(html);
+	let h = treeToMarkdownish(html).replace(/\uE000/g, '\n');
 	h = stripToAscii(decodeHtmlEntities(h));
 	const lines = h
 		.split('\n')
@@ -228,21 +147,6 @@ export function extractHtml(html: string): { title: string; text: string; publis
 		blank = 0;
 	}
 	return { title, publishedAt, paywalled, text: out.join('\n').replace(/\n{3,}/g, '\n\n') };
-}
-
-function extractPublishedDate(html: string): string | undefined {
-	const iso = (v: string | undefined) => {
-		if (!v) return undefined;
-		const t = Date.parse(v.trim());
-		return Number.isNaN(t) || t < 0 ? undefined : new Date(t).toISOString().slice(0, 10);
-	};
-	const ld = /"datePublished"\s*:\s*"([^"]+)"/.exec(html)?.[1];
-	const meta =
-		/<meta[^>]+(?:property|name)=["'](?:article:published_time|datePublished|publish-date|pubdate|parsely-pub-date|date)["'][^>]+content=["']([^"']+)["']/i.exec(
-			html,
-		)?.[1];
-	const timeEl = /<time[^>]+datetime=["']([^"']+)["']/i.exec(html)?.[1];
-	return iso(ld) ?? iso(meta) ?? iso(timeEl);
 }
 
 const NAV_LABEL_RE =

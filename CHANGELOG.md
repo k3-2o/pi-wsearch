@@ -1,6 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-10-17)
+
+### Fetch
+
+- Local extraction runs over a real tree (parse5 + htmlparser2) instead of
+  regex over markup: malformed HTML recovers per spec, entities decode through
+  text nodes, escaped markup survives as literal text, and pre/tables/lists/
+  math keep their structure. Titles are entity-decoded and no longer echo into
+  the body text; the published-date lookup walks JSON-LD properly.
+
+### Fixes
+
+- The collapsed-result hint (`… N more lines, ctrl+o to expand`) renders
+  uniformly dim in both tools instead of half bold, half dim. The hint key
+  follows user remaps and falls back to `ctrl+o` when the extension can't see
+  pi's keybinding manager (no more phantom double-space).
 
 ## 0.3.2 (2026-10-17)
 

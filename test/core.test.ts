@@ -29,6 +29,7 @@ import { validateToolArguments } from '@earendil-works/pi-ai';
 import { cacheKey, openCache } from '../src/cache';
 import { postJson, runEngines } from '../src/engines';
 import { fuse, diversifyByHost, type FusedHit } from '../src/fuse';
+import { headScan, treeToMarkdownish } from '../src/dom';
 import { isJunk, normalizeUrl } from '../src/urls';
 import {
 	decodeHtmlEntities,
@@ -42,6 +43,7 @@ import {
 	validateUrl,
 } from '../src/scrape';
 import { stubReader } from '../src/transport';
+import { readBodyBounded } from '../src/transport';
 
 let server: Server;
 let allowPrivate = false;
@@ -1119,5 +1121,92 @@ describe('scrape', () => {
 		expect(validate({ url: 'https://example.com/a', sections: [0], offset: 5 })).toBe(false);
 		expect(validate({ url: 'https://example.com/a', sections: [0], limit: 25 })).toBe(false);
 		expect(validate({ sections: [0] })).toBe(false);
+	});
+});
+
+describe('dom tree tier', () => {
+	test('treeToMarkdownish: headings, bullets, and block separation', () => {
+		const text = treeToMarkdownish(
+			`<h2>Steps</h2><ul><li>Get the key</li><li>Install it<ul><li>Nested step</li></ul></li></ul><p>Done.</p>`,
+		);
+		expect(text).toContain('## Steps');
+		expect(text).toContain('• Get the key');
+		expect(text).toContain('• Install it');
+		expect(text).toContain('• Nested step');
+		expect(text).toContain('Done.');
+	});
+
+	test('treeToMarkdownish: kaTeX and math are handled, nav dies with its subtree', () => {
+		const text = treeToMarkdownish(
+			'<nav><a href="/">Menu</a></nav><p><span class="katex"><span class="katex-mathml">x</span></span> plus ' +
+				'<math><semantics><mrow><mi>x</mi></mrow><annotation encoding="application/x-tex">x^2+1</annotation></semantics></math></p>',
+		);
+		expect(text).not.toContain('Menu');
+		expect(text).not.toContain('katex');
+		expect(text).toContain('$x^2+1$');
+	});
+
+	test('treeToMarkdownish: pre newlines survive via the placeholder', () => {
+		const text = treeToMarkdownish('<pre><code>a\nb\nc</code></pre>');
+		expect(text.replace(/\uE000/g, '\n')).toContain('a\nb\nc');
+	});
+
+	test('treeToMarkdownish: malformed nesting recovers per spec', () => {
+		const text = treeToMarkdownish('<p>one<p>two</p>three');
+		expect(text).toContain('one');
+		expect(text).toContain('two');
+		expect(text).toContain('three');
+	});
+
+	test('treeToMarkdownish: escaped markup is literal text, never a tag', () => {
+		const text = treeToMarkdownish('<p>&lt;limit param=&#34;rank&#34; /&gt; &amp; not a tag</p>');
+		expect(text).toContain('<limit param="rank" />');
+		expect(text).not.toContain('<p>');
+	});
+
+	test('headScan: decoded title with og:title fallback', () => {
+		expect(headScan('<head><title>Tom &amp; Jerry</title></head>').title).toBe('Tom & Jerry');
+		expect(headScan('<head><meta property="og:title" content="  OGT  "></head>').title).toBe('OGT');
+		expect(headScan('<html><body>no title, only body</body></html>').title).toBe('');
+	});
+
+	test('headScan: published date priority ld+json > meta > time', () => {
+		const iso = '2024-03-15T10:00:00Z';
+		const ld = `<script type="application/ld+json">{"@type":"Article","datePublished":"${iso}"}</script>`;
+		const meta = `<meta property="article:published_time" content="${iso}">`;
+		const time = `<time datetime="${iso}">Mar 15, 2024</time>`;
+		expect(headScan(`${ld}${meta}${time}`).publishedAt).toBe('2024-03-15');
+		expect(headScan(`${meta}${time}`).publishedAt).toBe('2024-03-15');
+		expect(headScan(`${time}`).publishedAt).toBe('2024-03-15');
+		expect(headScan('<p>no date anywhere</p>').publishedAt).toBeUndefined();
+	});
+
+	test('headScan: malformed JSON-LD is skipped, later meta still wins', () => {
+		const html = `<script type="application/ld+json">{broken</script><meta name="date" content="2019-06-01">`;
+		expect(headScan(html).publishedAt).toBe('2019-06-01');
+	});
+});
+
+describe('readBodyBounded', () => {
+	test('cancels the reader when the byte cap is exceeded mid-stream', async () => {
+		let cancelled = false;
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new Uint8Array([1, 2, 3]));
+				controller.enqueue(new Uint8Array([4, 5, 6]));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const res = new Response(stream);
+		await expect(readBodyBounded(res, 5)).rejects.toThrow('page too large');
+		expect(cancelled).toBe(true);
+	});
+
+	test('accepts a body under the cap', async () => {
+		const res = new Response(new Uint8Array([1, 2, 3]));
+		const out = await readBodyBounded(res, 10);
+		expect(Array.from(out)).toEqual([1, 2, 3]);
 	});
 });

@@ -4,7 +4,7 @@
  */
 import { Type } from 'typebox';
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from '@earendil-works/pi-coding-agent';
-import { keyHint } from '@earendil-works/pi-coding-agent';
+import { keyHint, keyText, rawKeyHint } from '@earendil-works/pi-coding-agent';
 import { Text, type Component } from '@earendil-works/pi-tui';
 import { appendFileSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -363,17 +363,18 @@ class WrappedSearchText implements Component {
 	render(width: number): string[] {
 		const wrapped = wrapAll(this.raw, Math.max(40, width));
 		const lines = wrapped.split('\n');
-		let shown = lines;
-		let hint = '';
-		if (!this.expanded && lines.length > SEARCH_PREVIEW_LINES) {
-			shown = lines.slice(0, SEARCH_PREVIEW_LINES);
-			hint = moreLinesHint(shown.length, lines.length, this.theme);
-		}
+		const expanded = this.expanded || lines.length <= SEARCH_PREVIEW_LINES;
+		const shown = expanded ? lines : lines.slice(0, SEARCH_PREVIEW_LINES);
 		const colored = italicizeRanks(shown.join('\n'), this.theme)
 			.split('\n')
 			.map((l) => colorLine(l, this.theme))
 			.join('\n');
-		return replaceTabs(colored + hint).split('\n');
+		const out = replaceTabs(colored).split('\n');
+		if (!expanded) {
+			const hint = moreLinesHint(shown.length, lines.length, this.theme);
+			if (hint) out.push(hint);
+		}
+		return out;
 	}
 }
 
@@ -410,13 +411,20 @@ function resultText(result: { content: { type: string; text?: string }[] }): str
 function moreLinesHint(shown: number, total: number, theme: Theme): string {
 	const remaining = total - shown;
 	if (remaining <= 0) return '';
-	return theme.fg('muted', `\n… (${remaining} more lines, ${keyHint('app.tools.expand', 'to expand')})`);
+	let hint: string;
+	try {
+		hint = keyText('app.tools.expand') ? keyHint('app.tools.expand', 'to expand') : rawKeyHint('ctrl+o', 'to expand');
+	} catch {
+		hint = rawKeyHint('ctrl+o', 'to expand');
+	}
+	return theme.fg('muted', `… (${remaining} more lines,`) + ' ' + hint + theme.fg('muted', ')');
 }
 
 function previewWithHint(lines: string[], theme: Theme, maxLines = PREVIEW_LINES): string {
 	const shown = lines.slice(0, maxLines);
 	const text = shown.map((l) => theme.fg('toolOutput', replaceTabs(l))).join('\n');
-	return text + moreLinesHint(shown.length, lines.length, theme);
+	const hint = moreLinesHint(shown.length, lines.length, theme);
+	return hint ? `${text}\n${hint}` : text;
 }
 
 function replaceTabs(text: string): string {

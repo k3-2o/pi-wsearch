@@ -203,7 +203,7 @@ function decodeBody(bytes: Uint8Array, contentType: string): string {
 	return looksMojibake(text) ? repairMojibake(text) : text;
 }
 
-async function readBodyBounded(res: Response, maxBytes: number): Promise<Uint8Array> {
+export async function readBodyBounded(res: Response, maxBytes: number): Promise<Uint8Array> {
 	const declared = Number(res.headers.get('content-length') ?? 0);
 	if (declared > maxBytes) throw new Error('page too large');
 	const reader = res.body?.getReader();
@@ -218,7 +218,10 @@ async function readBodyBounded(res: Response, maxBytes: number): Promise<Uint8Ar
 		const { done, value } = await reader.read();
 		if (done) break;
 		size += value.byteLength;
-		if (size > maxBytes) throw new Error('page too large');
+		if (size > maxBytes) {
+			await reader.cancel();
+			throw new Error('page too large');
+		}
 		chunks.push(value);
 	}
 	const out = new Uint8Array(size);
