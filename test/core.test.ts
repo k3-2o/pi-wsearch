@@ -166,8 +166,8 @@ describe('config / secrets', () => {
 		expect(resolveStoredValue('abc')).toBeUndefined(); // too short to be a key
 	});
 	test('dedicated wsearch/env file is read when present', () => {
-		process.env.WSEARCH_CACHE_DIR = '/tmp/pi-wsearch-key-test';
-		Bun.write('/tmp/pi-wsearch-key-test/env', ['TINYFISH_API_KEY=zzzz9999'].join('\n'));
+		process.env.WSEARCH_CACHE_DIR = join(tmpdir(), 'pi-wsearch-key-test');
+		Bun.write(join(tmpdir(), 'pi-wsearch-key-test', 'env'), ['TINYFISH_API_KEY=zzzz9999'].join('\n'));
 		resetConfigCache();
 		try {
 			expect(getConfig().tinyfishKey).toBe('zzzz9999');
@@ -189,7 +189,7 @@ describe('config / secrets', () => {
 		}
 	});
 	test('writeKey writes atomically 0600, replaces aliases, preserves other lines', async () => {
-		const dir = `/tmp/pi-wsearch-write-test-${process.pid}`;
+		const dir = join(tmpdir(), `pi-wsearch-write-test-${process.pid}`);
 		process.env.WSEARCH_CACHE_DIR = dir;
 		resetConfigCache();
 		try {

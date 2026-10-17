@@ -70,11 +70,19 @@ const FETCH_OUTPUT = Type.Object({
 	title: Type.String(),
 	renderer: Type.String(),
 	outline: Type.Array(Type.String()),
+	sections: Type.Array(
+		Type.Object({
+			index: Type.Integer({ minimum: 0 }),
+			heading: Type.String(),
+			text: Type.String(),
+		}),
+	),
 	section_count: Type.Number(),
 	chars: Type.Number(),
 	sections_requested: Type.Optional(Type.Array(Type.Number())),
 	sections_missing: Type.Optional(Type.Array(Type.Number())),
 	sections_truncated: Type.Optional(Type.Number()),
+	sections_clipped: Type.Optional(Type.Array(Type.Integer({ minimum: 0 }))),
 	error: Type.Optional(Type.String()),
 });
 
@@ -353,11 +361,13 @@ type FetchDetails = {
 	title: string;
 	renderer: string;
 	outline: string[];
+	sections: { index: number; heading: string; text: string }[];
 	section_count: number;
 	chars?: number;
 	sections_requested?: number[];
 	sections_missing?: number[];
 	sections_truncated?: number;
+	sections_clipped?: number[];
 	error?: string;
 };
 
@@ -439,7 +449,6 @@ function fetchErrorResult(details: FetchDetails): FetchResult {
 
 function buildFetchResult(res: Awaited<ReturnType<typeof scrape>>, sections: number[]): FetchResult {
 	const want = [...new Set(sections.map((i) => Math.max(0, Math.min(res.sections.length - 1, i))))];
-	const chosen = want.map((i) => res.sections[i]).filter(Boolean);
 	const body = res.outline.length
 		? `indices - 0 - ${res.outline.length - 1} section${res.outline.length === 1 ? '' : 's'}\n${res.outline.map((h, i) => `- *${i}* ${h}`).join('\n')}\n\n`
 		: '';
@@ -471,17 +480,48 @@ function buildFetchResult(res: Awaited<ReturnType<typeof scrape>>, sections: num
 	if (res.renderer && res.renderer !== 'local') text += `\n\n[rendered via ${res.renderer}]`;
 	const clipped = text.length > MAX_FETCH_TEXT ? text.slice(0, MAX_FETCH_TEXT) + '\n…[clipped by tool]' : text;
 	const missing = sections.filter((i) => i >= res.sections.length);
+	// continuation cuts (res.continued) vs local budget clips (clippedSections)
 	const truncatedCount = want.filter((idx) => res.continued?.includes(idx)).length;
+
+	// same budget as the text view; headings and the '…' marker count against it
+	let budget = MAX_FETCH_TEXT;
+	const structuredSections: { index: number; heading: string; text: string }[] = [];
+	const clippedSections: number[] = [];
+	for (const idx of want) {
+		if (budget <= 0) {
+			clippedSections.push(idx);
+			continue;
+		}
+		const s = res.sections[idx];
+		if (s === undefined) continue;
+		const heading = res.outline[idx] ?? '';
+		const fullCost = heading.length + s.length;
+		if (fullCost <= budget) {
+			structuredSections.push({ index: idx, heading, text: s });
+			budget -= fullCost;
+			continue;
+		}
+		if (heading.length >= budget) {
+			structuredSections.push({ index: idx, heading: heading.slice(0, Math.max(0, budget - 1)) + '…', text: '' });
+		} else {
+			const textLen = Math.max(0, budget - heading.length - 1);
+			structuredSections.push({ index: idx, heading, text: s.slice(0, textLen) + (textLen < s.length ? '…' : '') });
+		}
+		clippedSections.push(idx);
+		budget = 0;
+	}
 	const details = {
 		url: res.url,
 		title: res.title,
 		renderer: res.renderer,
 		outline: res.outline,
-		section_count: chosen.length,
+		sections: structuredSections,
+		section_count: structuredSections.length,
 		chars: clipped.length,
 		sections_requested: [...new Set(sections)],
 		sections_missing: [...new Set(missing)],
 		sections_truncated: truncatedCount,
+		sections_clipped: clippedSections,
 		...(res.publishedAt ? { publishedAt: res.publishedAt } : {}),
 		...(res.paywalled ? { paywalled: true } : {}),
 		...(res.error ? { error: res.error } : {}),

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fetch
+
+- Codemode parity: `structuredContent.sections` now carries each section's
+  body text under the same budget as the text view. Scripts read what the
+  model reads.
+- Truncation accounting split: `sections_truncated` counts server-side
+  continuation cuts only; local budget clips report via new `sections_clipped`
+  indices. No more double-counting; `section_count` matches the emitted
+  `sections` array.
+
 ## 0.3.1 (2026-10-13)
 
 ### Search

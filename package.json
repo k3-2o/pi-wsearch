@@ -57,7 +57,7 @@
     "knip": "^6.39.0",
     "oxfmt": "^0.71.0",
     "oxlint": "^1.86.0",
-    "typescript": "^7.0.2"
+    "typescript": "^5.9.3"
   },
   "dependencies": {},
   "main": "index.ts",

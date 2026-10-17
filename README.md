@@ -39,7 +39,10 @@ and reads only those. No
 full reads, no 40 KB dumps. Sections over 3,000 characters split into
 addressable continuation entries (`Section (cont. 1)`), so no tail is ever
 unreachable; pages that overflow are capped; the final response is clipped.
-Every cut is marked — nothing is silently lost.
+Every cut is marked — nothing is silently lost. Codemode consumers get the same
+view via structuredContent: per-section `{index, heading, text}`, continuation
+cuts counted in `sections_truncated`, local budget cuts listed in
+`sections_clipped`.
 
 **Reads are free.** Page parsing is built in, nothing billed per read, no key
 required. Real headings become the map, TOC echoes get dropped, so reads come
