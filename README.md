@@ -8,14 +8,13 @@
 ranking. `WebSearch` runs every engine you've configured in parallel and
 merges their results by reciprocal rank fusion (RRF). A hit only earns its
 place by surviving several independent judgments. The response shows the
-corroboration in detail: `⇐ serper#1, exa#2, you#4` means three separate
-indexes ranked that page — and where each one placed it. Single-engine hits
+corroboration: `⇐ serper#1, exa#2, you#4` lists which indexes
+ranked that page and where each placed it. Single-engine hits
 are labeled `single-engine: unverified`. Agreement is the spam defense;
 generative-SEO can stuff one index, not three.
 
 **Pick your engines.** Nine are supported; three or four is plenty. Use
-whatever keys you have, even one, because what follows doesn't depend on how
-many engines answer:
+whatever keys you have, even one:
 
 - **Rare strings match literally.** `pgvector`, CVE numbers, error codes match
   as exact words, not fuzzy prose.
@@ -35,22 +34,22 @@ Firecrawl, TinyFish
 you to find the signal. `WebFetch` breaks any page into an outline of every
 section and answers by number: `{url, sections: [0, 3]}` fetches just two
 sections of the fetched page. The agent surveys the map, picks what matters,
-and reads only those. No
+and reads only those: no
 full reads, no 40 KB dumps. Sections over 3,000 characters split into
 addressable continuation entries (`Section (cont. 1)`), so no tail is ever
-unreachable; pages that overflow are capped; the final response is clipped.
-Every cut is marked — nothing is silently lost. Codemode consumers get the same
-view via structuredContent: per-section `{index, heading, text}`, continuation
-cuts counted in `sections_truncated`, local budget cuts listed in
-`sections_clipped`.
+unreachable; overflowing pages are capped.
+Every cut is marked; nothing is silently lost. Codemode consumers get the same
+view via structuredContent: per-section `{index, heading, text}`.
+`sections_truncated` counts continuation cuts; `sections_clipped` lists
+local budget cuts.
 
-**Reads are free.** Page parsing is built in, nothing billed per read, no key
-required. Real headings become the map, TOC echoes get dropped, so reads come
-back as clean as a paid one at zero cost. Paid readers only step in for
-JavaScript heavy pages or when the local read fails. Reader output is
-laundered too: standalone photo credits (REUTERS/, AP Photo/, Getty), video
+**Reads are free.** Page parsing is built in, bills nothing per read, and
+needs no key. Real headings become the map, TOC echoes get dropped. Paid
+readers only step in for JavaScript-heavy pages or when the local read fails.
+Reader output is laundered: standalone photo
+credits (REUTERS/, AP Photo/, Getty), video
 durations, carousel markers and relative-time chips are stripped from news
-pages (whole-line rules only — prose is untouched), and a reader that returns
+pages (whole-line rules only; prose is untouched), and a reader that returns
 a 404-page template is skipped so the chain moves on to the next backend.
 
 **Tracking links cache as one page.** `?utm_source=…` variants of the same URL
@@ -106,7 +105,6 @@ free tiers.
 
 ## Commands
 
-
 One command, five subcommands:
 
 | Command | Does |
@@ -125,7 +123,7 @@ One command, five subcommands:
 
 ## Quick start
 
-1. Get a key from any provider: Tavily, Exa, and Firecrawl have free tiers.
+1. Get a key from any provider.
 2. Set it one of three ways:
 
    ```
@@ -134,8 +132,6 @@ One command, five subcommands:
    export TAVILY_API_KEY=...   # or just the terminal session
    ```
 
-   Shell config works too (.zshrc, .bashrc, fish config): park the export
-   there and the extension finds it on startup.
 3. Verify:
 
    ```
