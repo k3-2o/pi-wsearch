@@ -1105,10 +1105,10 @@ describe('scrape', () => {
 
 	// ---- bonded fetch schema: sections is the only address ------------------
 	test('FETCH_PARAMS accepts section reads and rejects everything else', () => {
-		const tool = { name: 'web.fetch', parameters: FETCH_PARAMS } as never;
+		const tool = { name: 'WebFetch', parameters: FETCH_PARAMS } as never;
 		const validate = (args: Record<string, unknown>) => {
 			try {
-				validateToolArguments(tool, { name: 'web.fetch', arguments: args } as never);
+				validateToolArguments(tool, { name: 'WebFetch', arguments: args } as never);
 				return true;
 			} catch {
 				return false;

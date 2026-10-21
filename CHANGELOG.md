@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Breaking
+
+- Renamed the tools `web.search` → `WebSearch` and `web.fetch` → `WebFetch`
+  (camelCase, matching pi's built-in tool naming).
+
 ## 0.4.0 (2026-10-17)
 
 ### Fetch

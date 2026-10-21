@@ -1,5 +1,5 @@
 /**
- * Transport for web.fetch: UA-rotating local HTTP + the key-gated reader
+ * Transport for WebFetch: UA-rotating local HTTP + the key-gated reader
  * backends. Text processing lives in scrape.ts (one-way import). SSRF: every
  * redirect hop is re-validated against the private/loopback gates on the
  * local path (see urls.isPrivateHost for the deliberate scope).

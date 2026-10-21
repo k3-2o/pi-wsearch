@@ -2,10 +2,10 @@
 
 ## Not the web tools you've used
 
-### web.search
+### WebSearch
 
 **One search, many judges.** Most web tools hand you a single engine's
-ranking. `web.search` runs every engine you've configured in parallel and
+ranking. `WebSearch` runs every engine you've configured in parallel and
 merges their results by reciprocal rank fusion (RRF). A hit only earns its
 place by surviving several independent judgments. The response shows the
 corroboration in detail: `⇐ serper#1, exa#2, you#4` means three separate
@@ -29,10 +29,10 @@ many engines answer:
 **Supported providers:** Serper, Tavily, Exa, Brave, Jina, Kagi, You.com,
 Firecrawl, TinyFish
 
-### web.fetch
+### WebFetch
 
 **Fetch reads a map, not a dump.** Most web tools hand you raw HTML and tell
-you to find the signal. `web.fetch` breaks any page into an outline of every
+you to find the signal. `WebFetch` breaks any page into an outline of every
 section and answers by number: `{url, sections: [0, 3]}` fetches just two
 sections of the fetched page. The agent surveys the map, picks what matters,
 and reads only those. No
@@ -80,8 +80,8 @@ Or from git:
 pi install git:github.com/k3-2o/pi-wsearch
 ```
 
-Either way pi picks up the package on next start and registers `web.search`,
-`web.fetch`, and the `/websearch` command. To try it once without installing:
+Either way pi picks up the package on next start and registers `WebSearch`,
+`WebFetch`, and the `/websearch` command. To try it once without installing:
 
 ```
 pi -e npm:pi-wsearch
@@ -147,7 +147,7 @@ One command, five subcommands:
 
    > What's the current Node.js LTS version?
 
-   It will `web.search` it, `web.fetch` the answer's page by section, and
+   It will `WebSearch` the query, `WebFetch` the answer's page by section, and
    cite where each claim came from.
 
 ## License
