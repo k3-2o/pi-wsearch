@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 
 const BINDING_FAILURE =
-	/cannot find (native binding|module .*?binding)|cannot (resolve|load) .*?binding|\.node\b.*(?:cannot|could not|fail)|illegal instruction|segmentation|core dumped|no such file .*?\.node|unsupported platform/i;
+	/cannot find (native binding|module .*?binding)|cannot (resolve|load) .*?binding|\.node\b.*(?:cannot|could not|fail)|dlopen failed|cannot locate symbol|undefined symbol|illegal instruction|segmentation|core dumped|no such file .*?\.node|unsupported platform/i;
 
 const repoRoot = join(import.meta.dirname, '..');
 const knipBin = process.env.KNIP_BIN ?? join(repoRoot, 'node_modules', 'knip', 'bin', 'knip.js');

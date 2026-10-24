@@ -92,7 +92,7 @@ function normalizeHitDate(raw: string | undefined): string | undefined {
 
 function formatEvidence(r: FusedHit): string {
 	if (!r.engineRanks?.length) return r.engines.length > 1 ? ` ← ${r.engines.length} engines` : '';
-	if (r.engineRanks.length === 1) return ` ⇐ ${r.engineRanks[0].engine} only (single-engine: unverified)`;
+	if (r.engineRanks.length === 1) return ` ⇐ ${r.engineRanks[0].engine}#${r.engineRanks[0].rank}`;
 	const shown = r.engineRanks
 		.slice(0, 6)
 		.map((e) => `${e.engine}#${e.rank}`)
@@ -116,6 +116,14 @@ function chapterTitle(r: FusedHit): string {
 function compactWarn(e: ErroredEngine): string {
 	const status = /HTTP\s+(\d{3})/i.exec(e.error)?.[1];
 	return status ? `${status}: ${e.engine}` : `${e.engine}: ${e.error.slice(0, ERROR_SNIP)}`;
+}
+
+export type WrappedKind = 'index' | 'chapter';
+
+export function wrappedLineKind(plain: string): WrappedKind | undefined {
+	if (/^ {4,5}\S/.test(plain)) return 'index';
+	if (/^ {6,}\S/.test(plain)) return 'chapter';
+	return undefined;
 }
 
 export function buildSearchText(v: SearchView, opts: SearchViewOpts = {}): string {

@@ -224,6 +224,17 @@ function collapseNearDuplicates(fused: FusedHit[]): FusedHit[] {
 	return kept;
 }
 
+export function queryTermCoverage(hits: { title: string; snippet: string }[], query: string): number {
+	const terms = queryTerms(query);
+	if (!terms.length) return 1;
+	let matched = 0;
+	for (const t of terms) {
+		const found = hits.some((h) => termIn(t, h.title.toLowerCase()) || termIn(t, h.snippet.toLowerCase()));
+		if (found) matched += 1;
+	}
+	return matched / terms.length;
+}
+
 export function fuse(outcomes: EngineOutcome[], opts: FuseOptions = {}): FusedHit[] {
 	const { query } = opts;
 	const terms = query ? queryTerms(query) : [];

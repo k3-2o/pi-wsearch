@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildSearchText } from '../src/view';
+import { buildSearchText, wrappedLineKind } from '../src/view';
 import type { FusedHit } from '../src/fuse';
 
 function hit(url: string, title: string, over: Partial<FusedHit> = {}): FusedHit {
@@ -217,14 +217,43 @@ describe('buildSearchText layout', () => {
 		}
 	});
 
-	test('single-engine evidence is labelled unverified', () => {
+	test('single-engine evidence shows engine and rank', () => {
 		const text = buildSearchText({
 			query: 'q',
 			hits: [hit('https://a.example/', 'A', { engineRanks: [{ engine: 'exa', rank: 3 }] })],
 			enginesUsed: ['exa'],
 			errored: [],
 		});
-		expect(text).toContain('⇐ exa only (single-engine: unverified)');
+		expect(text).toContain('⇐ exa#3');
+		expect(text).not.toContain('unverified');
+	});
+
+	test('wrapped lines classify by indent: index rows dim, chapter rows accent, bodies plain', () => {
+		expect(wrappedLineKind('    wrapped index row words')).toBe('index');
+		expect(wrappedLineKind('     wrapped index row, triple-digit hit')).toBe('index');
+		expect(wrappedLineKind('   body line at three spaces')).toBeUndefined();
+		expect(wrappedLineKind('      wrapped chapter title words')).toBe('chapter');
+		expect(wrappedLineKind('no indent at all')).toBeUndefined();
+		expect(wrappedLineKind('    ')).toBeUndefined();
+	});
+
+	test('overflowing index rows wrap into dim-styled continuation indents', () => {
+		const text = buildSearchText(
+			{
+				query: 'q',
+				hits: [
+					hit('https://a.example/', 'A reasonably long page title about something', {
+						engineRanks: [{ engine: 'exa', rank: 3 }],
+					}),
+				],
+				enginesUsed: ['exa'],
+				errored: [],
+			},
+			{ wrap: 40 },
+		);
+		const continuation = text.split('\n').find((l) => /^ {4,5}\S/.test(l));
+		expect(continuation).toBeDefined();
+		expect(wrappedLineKind(continuation!)).toBe('index');
 	});
 
 	test('unparseable URL: no dangling separator', () => {

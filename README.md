@@ -9,8 +9,8 @@ ranking. `WebSearch` runs every engine you've configured in parallel and
 merges their results by reciprocal rank fusion (RRF). A hit only earns its
 place by surviving several independent judgments. The response shows the
 corroboration: `⇐ serper#1, exa#2, you#4` lists which indexes
-ranked that page and where each placed it. Single-engine hits
-are labeled `single-engine: unverified`. Agreement is the spam defense;
+ranked that page and where each placed it. A hit returned by one engine alone
+shows just that engine and rank: `⇐ exa#3`. Agreement is the spam defense;
 generative-SEO can stuff one index, not three.
 
 **Pick your engines.** Nine are supported; three or four is plenty. Use

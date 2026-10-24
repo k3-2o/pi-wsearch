@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0 (2026-10-24)
+
+- Added `results_look_offtopic` to `WebSearch`: flags hits that barely match the query
+  so the agent reformulates instead of fetching.
+- Single-engine evidence now shows engine and rank (`⇐ exa#3`), not `single-engine: unverified`.
+- Fixed wrapped index and chapter lines losing their styling mid-wrap.
+
 ## 0.4.1 (2026-10-21)
 
 ### Breaking

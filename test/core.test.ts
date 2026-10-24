@@ -28,7 +28,7 @@ import { registerWebTools, FETCH_PARAMS } from '../src/tools';
 import { validateToolArguments } from '@earendil-works/pi-ai';
 import { cacheKey, openCache } from '../src/cache';
 import { postJson, runEngines } from '../src/engines';
-import { fuse, diversifyByHost, type FusedHit } from '../src/fuse';
+import { fuse, diversifyByHost, queryTermCoverage, type FusedHit } from '../src/fuse';
 import { headScan, treeToMarkdownish } from '../src/dom';
 import { isJunk, normalizeUrl } from '../src/urls';
 import {
@@ -167,9 +167,9 @@ describe('config / secrets', () => {
 		expect(resolveStoredValue('!')).toBeUndefined();
 		expect(resolveStoredValue('abc')).toBeUndefined(); // too short to be a key
 	});
-	test('dedicated wsearch/env file is read when present', () => {
+	test('dedicated wsearch/env file is read when present', async () => {
 		process.env.WSEARCH_CACHE_DIR = join(tmpdir(), 'pi-wsearch-key-test');
-		Bun.write(join(tmpdir(), 'pi-wsearch-key-test', 'env'), ['TINYFISH_API_KEY=zzzz9999'].join('\n'));
+		await Bun.write(join(tmpdir(), 'pi-wsearch-key-test', 'env'), ['TINYFISH_API_KEY=zzzz9999'].join('\n'));
 		resetConfigCache();
 		try {
 			expect(getConfig().tinyfishKey).toBe('zzzz9999');
@@ -416,6 +416,20 @@ function mkHit(url: string, engine: string, title = url, snippet = 's'): FusedHi
 }
 
 describe('fuse', () => {
+	test('queryTermCoverage: full coverage, partial, and none', () => {
+		const hits = [
+			{ title: 'pgvector configuration options', snippet: 'how to set up pgvector indexes' },
+			{ title: 'postgres extension setup', snippet: 'ivfflat and hnsw index types' },
+		];
+		expect(queryTermCoverage(hits, 'pgvector configuration options')).toBe(1);
+		expect(queryTermCoverage(hits, 'pgvector hnsw configuration')).toBe(1);
+		expect(queryTermCoverage(hits, 'pgvector walrus retirement plan')).toBeLessThan(1);
+		expect(queryTermCoverage(hits, 'pinecone weaviate comparison')).toBe(0);
+		expect(queryTermCoverage(hits, 'pgvector the-and-or-of')).toBe(1);
+		expect(queryTermCoverage([], 'pgvector setup')).toBe(0);
+		expect(queryTermCoverage(hits, 'and the or')).toBe(1);
+	});
+
 	test('isJunk: mirror laundries die with their primaries; legit paths pass', () => {
 		expect(isJunk('https://x.com/badlogicgames/status/123')).toBe(true);
 		expect(isJunk('https://twiscan.com/en/x/badlogicgames/123')).toBe(true);
