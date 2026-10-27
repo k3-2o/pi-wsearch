@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- Collapsed `WebSearch`/`WebFetch` calls now show their tool-output content
+  uniformly dim; expanding restores the full accent/bold/default coloring.
+  `WebFetch`'s collapsed preview dims too (previously rendered in the
+  `toolOutput` foreground). Truncation lengths and hint behavior are unchanged.
+
 ## 0.5.0 (2026-10-24)
 
 - Added `results_look_offtopic` to `WebSearch`: flags hits that barely match the query
