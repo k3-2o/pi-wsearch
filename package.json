@@ -1,6 +1,6 @@
 {
   "name": "pi-wsearch",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Pi extension: WebSearch + WebFetch",
   "license": "MIT",
   "type": "module",
