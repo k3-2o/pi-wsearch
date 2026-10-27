@@ -376,7 +376,7 @@ class WrappedSearchText implements Component {
 		const shown = expanded ? lines : lines.slice(0, SEARCH_PREVIEW_LINES);
 		const colored = italicizeRanks(shown.join('\n'), this.theme)
 			.split('\n')
-			.map((l) => colorLine(l, this.theme))
+			.map((l) => (this.expanded ? colorLine(l, this.theme) : this.theme.fg('dim', l)))
 			.join('\n');
 		const out = replaceTabs(colored).split('\n');
 		if (!expanded) {
@@ -434,7 +434,7 @@ function moreLinesHint(shown: number, total: number, theme: Theme): string {
 
 function previewWithHint(lines: string[], theme: Theme, maxLines = PREVIEW_LINES): string {
 	const shown = lines.slice(0, maxLines);
-	const text = shown.map((l) => theme.fg('toolOutput', replaceTabs(l))).join('\n');
+	const text = shown.map((l) => theme.fg('dim', replaceTabs(l))).join('\n');
 	const hint = moreLinesHint(shown.length, lines.length, theme);
 	return hint ? `${text}\n${hint}` : text;
 }
